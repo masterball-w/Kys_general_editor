@@ -166,6 +166,7 @@ class RangerArchive:
         self.magics = RecordTable(self.layout.magic_words)
         self.shops = RecordTable(self.layout.shop_words)
         self._raw: bytes = b""
+        self._header_pad: bytes = b""
 
     @staticmethod
     def find_idx(save_dir: Path) -> Path:
@@ -242,6 +243,16 @@ class RangerArchive:
         h.team = [_i16(d, self.layout.team_offset + i * 2) for i in range(self.layout.team_count)]
         while len(h.team) < self.layout.team_count:
             h.team.append(-1)
+        team_end = self.layout.team_offset + self.layout.team_count * 2
+        pad_end = (
+            self.layout.money_offset
+            if self.layout.money_offset >= 0
+            else self.layout.inventory_base
+        )
+        if pad_end > team_end:
+            self._header_pad = bytes(d[team_end:pad_end])
+        else:
+            self._header_pad = b""
         h.money = 0
         if self.layout.money_offset >= 0:
             h.money = _i16(d, self.layout.money_offset)
@@ -299,6 +310,9 @@ class RangerArchive:
                 self.layout.team_offset + i * 2,
                 h.team[i] if i < len(h.team) else -1,
             )
+        team_end = self.layout.team_offset + self.layout.team_count * 2
+        if self._header_pad:
+            header[team_end : team_end + len(self._header_pad)] = self._header_pad
         inv_base = self.layout.inventory_base
         if self.layout.money_offset >= 0:
             _set_i16(header, self.layout.money_offset, h.money)

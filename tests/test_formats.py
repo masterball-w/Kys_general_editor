@@ -30,6 +30,9 @@ def _pick_data_root() -> Path | None:
     legacy = ROOT / "game_data"
     if (legacy / "save").is_dir() and (legacy / "resource").is_dir():
         return legacy
+    awaken = EDITOR / "kys-awaken"
+    if (awaken / "save").is_dir() and (awaken / "resource").is_dir():
+        return awaken
     return None
 
 
@@ -236,41 +239,66 @@ def test_event_rollback_collect_modify():
     assert 1 in scripts
 
 
-def test_probe_ranger_header_tlbb_mod():
-    from pathlib import Path
+def _kys_awaken_root() -> Path | None:
+    for root in (
+        EDITOR / "kys-awaken",
+        Path(r"D:\program\misc\kys_tlbb_debug\kys-awaken"),
+    ):
+        if (root / "save" / "r1.grp").is_file() or (root / "save" / "R1.grp").is_file():
+            return root
+    return None
 
+
+def test_probe_ranger_header_tlbb_mod():
     from kys_formats.ranger_header import probe_ranger_header_layout
 
-    p = Path(r"D:\program\misc\kys_tlbb_debug\kys-awaken\save\r1.grp")
-    if not p.is_file():
+    root = _kys_awaken_root()
+    if not root:
         pytest.skip("kys-awaken r1.grp not present")
-    grp = p.read_bytes()
+    grp = (root / "save" / "R1.grp").read_bytes()
     lay = probe_ranger_header_layout(836, 68, grp[:836], role_count=128)
-    assert lay.team_offset == 30
+    assert lay.team_offset == 24
     assert lay.team_count == 6
     assert lay.inventory_base == 44
     assert lay.money_offset == 42
 
 
-def test_ranger_empty_team_tlbb_mod():
-    from pathlib import Path
-
+def test_ranger_team_tlbb_mod():
     from kys_formats.profile import detect_profile
     from kys_formats.ranger import RangerArchive, RangerLayout
 
-    root = Path(r"D:\program\misc\kys_tlbb_debug\kys-awaken")
-    if not (root / "save" / "r1.grp").is_file():
+    root = _kys_awaken_root()
+    if not root:
         pytest.skip("kys-awaken data not present")
     profile = detect_profile(root)
-    assert profile.ranger_team_offset == 30
+    assert profile.ranger_team_offset == 24
     assert profile.ranger_team_count == 6
     assert profile.ranger_inventory_base == 44
     arc = RangerArchive(RangerLayout.from_profile(profile))
+    arc.text_encoding = "big5"
     arc.load(root / "save", 1)
     assert len(arc.header.team) == 6
-    # Bytes 36-41 are team[3..5], not inventory (inv starts @44 for role_o=836).
-    assert arc.header.team[3] == 8
-    assert arc.header.team[4] == 1
+    # Team[0..3] at bytes 24..30 — matches in-game party strip for save slot 1.
+    assert arc.header.team[0] == 0
+    assert arc.header.team[1] == -1
+    assert arc.header.team[2] == 0
+    assert arc.header.team[3] == 0
+    assert arc.role_name(0)  # protagonist present
+
+
+def test_ranger_roundtrip_tlbb_mod():
+    from kys_formats.profile import detect_profile
+    from kys_formats.ranger import RangerArchive, RangerLayout
+
+    root = _kys_awaken_root()
+    if not root:
+        pytest.skip("kys-awaken data not present")
+    profile = detect_profile(root)
+    arc = RangerArchive(RangerLayout.from_profile(profile))
+    arc.load(root / "save", 1)
+    raw = (root / "save" / "R1.grp").read_bytes()
+    rebuilt = arc.to_bytes()
+    assert rebuilt == raw
 
 
 def test_event_progress_flag():
