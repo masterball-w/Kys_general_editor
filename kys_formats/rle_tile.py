@@ -196,10 +196,28 @@ class RleTilePack:
 
 
 def code_to_tile_index(code: int) -> int:
-    """Engine stores even codes: tile_index = code // 2."""
-    if code <= 0:
+    """Map a KYS even pic/tile *code* to smp frame index.
+
+    Pascal ``DrawSPic(code div 2)`` / ``InitialSPic`` uses ``num = code div 2``.
+    With end-offset ``sdx`` packs (this module), that ``num`` indexes ``tiles[num]``.
+    (C++ engines that keep *start* offsets use ``(code/2)-1`` into the idx array;
+    both resolve to the same sprite bytes.)
+    """
+    if code == 0:
         return -1
+    # Negative codes select mmap / ScenePic paths; caller should branch first.
+    if code < 0:
+        return (-code) // 2
     return code // 2
+
+
+def format_pic_code(code: int) -> str:
+    """Human-readable DData pic: raw code + smp index."""
+    if code == 0:
+        return "0"
+    idx = code_to_tile_index(code)
+    sign = "-" if code < 0 else ""
+    return f"{code} → smp[{sign}{idx}]"
 
 
 def load_tile_pack_pair(

@@ -95,6 +95,24 @@ def test_ranger_roundtrip(tmp_path):
     assert arc2.roles.get(0, 15) == 99
 
 
+def test_collect_scene_entrances():
+    """World-map entrance overlay reads MainEntranceX/Y from ranger scenes."""
+    from kys_formats.world_map import collect_scene_entrances, WORLD_SIZE
+
+    profile = detect_profile(DATA_ROOT)
+    arc = RangerArchive(RangerLayout.from_profile(profile))
+    arc.load(SAVE, 0)
+    ents = collect_scene_entrances(arc)
+    assert ents, "expected at least one valid big-map entrance"
+    for e in ents:
+        assert 0 <= e.x < WORLD_SIZE and 0 <= e.y < WORLD_SIZE
+        assert e.name
+        assert e.which in (1, 2)
+    # Scene 0 (开场卧室所属场景) usually has a mapped entrance on the big map
+    scene0 = [e for e in ents if e.scene_id == 0]
+    assert scene0, "scene 0 should expose MainEntrance on big map"
+
+
 def test_war_roundtrip():
     profile = detect_profile(DATA_ROOT)
     war = WarArchive(profile.war)
@@ -145,12 +163,91 @@ def test_alldef_roundtrip():
     assert d.to_bytes() == path.read_bytes()
 
 
+def test_alldef_scene0_opening_pics():
+    """Stable opening: bed event0=8284, Kong Pili event1=8268 at bedroom (X=37,Y=40)."""
+    from kys_formats.rle_tile import code_to_tile_index, format_pic_code
+    from kys_formats.scene_data import SceneMapData
+
+    path = SAVE / "alldef.grp"
+    if not path.is_file():
+        pytest.skip("alldef.grp missing")
+    d = SceneEventData()
+    d.load(path)
+    assert d.scene_count > 0
+
+    ev0 = d.scenes[0][0]
+    assert ev0[5] == 8284
+    assert ev0[6] == 8284
+    assert ev0[7] == 8284
+    assert ev0[9] == 38 and ev0[10] == 40  # Y, X on bed
+
+    ev1 = d.scenes[0][1]
+    assert ev1[5] == 8268
+    assert ev1[6] == 8268
+    assert ev1[7] == 8268
+    assert ev1[9] == 40 and ev1[10] == 37  # Y, X in bedroom near bed
+    assert code_to_tile_index(8268) == 4134
+    assert "4134" in format_pic_code(8268)
+    assert len(ev0) == 11 and len(ev1) == 11
+
+    sin = SAVE / "allsin.grp"
+    if sin.is_file():
+        mp = SceneMapData()
+        mp.load(sin)
+        assert mp.get(0, 3, 40, 38) == 0
+        assert mp.get(0, 3, 37, 40) == 1
+
+
 def test_talk_decode():
     talk = TalkArchive()
     talk.load(RES)
     assert talk.count > 100
     t = talk.get_text(1)
     assert isinstance(t, str)
+
+
+def test_event_rollback_collect_modify():
+    from kys_formats.kdef import KdefArchive, Script, Instruction
+    from kys_formats.event_rollback import collect_related_rollback_targets
+    from kys_formats.scene_data import SceneEventData
+
+    kdef = KdefArchive.__new__(KdefArchive)
+    kdef.offsets = [0, 20]
+    script = Script(
+        1,
+        instructions=[
+            Instruction(3, [49, 1, 0, 1, -1, 0, 0, -1, -1, -1, -2, -2, -2], 0),
+            Instruction(-1, [], 14),
+        ],
+    )
+
+    def fake_get(sid):
+        assert sid == 1
+        return script
+
+    kdef.get_script = fake_get  # type: ignore[method-assign]
+
+    events = SceneEventData()
+    events.scenes = [[[0] * 11 for _ in range(200)]]
+    events.scenes[0][5][2] = 1
+    targets, scripts = collect_related_rollback_targets(kdef, 0, 5, events)
+    assert (0, 5) in targets
+    assert (49, 1) in targets
+    assert 1 in scripts
+
+
+def test_event_progress_flag():
+    from kys_formats.event_progress import event_progress_flag, event_runtime_changed
+    from kys_formats.scene_data import SceneEventData
+
+    tpl = SceneEventData()
+    cur = SceneEventData()
+    tpl.scenes = [[[1, 0, 10, 0, 0, 100, 0, 100, 0, 5, 5]]]
+    cur.scenes = [[[0, 0, 10, 0, 0, 100, 0, 100, 0, 5, 5]]]
+    assert event_runtime_changed(tpl.scenes[0][0], cur.scenes[0][0])
+    assert event_progress_flag(tpl, cur, 0, 0) == 1
+    cur.scenes[0][0][0] = 1
+    assert event_progress_flag(tpl, cur, 0, 0) == 0
 
 
 def test_craft_fields_present():

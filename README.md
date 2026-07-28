@@ -12,7 +12,14 @@ pip install -r requirements.txt
 python main.py
 ```
 
-启动后选择含 `save/` 与 `resource/` 的数据根目录；也可由工具栏「配置档」手动指定前传 / 经典 / GodsDevils。写回前会自动生成 `.bak`。
+启动后选择含 `save/` 与 `resource/` 的数据根目录；也可由工具栏「配置档」手动指定前传 / 经典 KYS。写回前会自动生成 `.bak`。
+
+### 重要：`alldef.grp` / `allsin.grp` 是新游戏模板
+
+- 场景 0 开场权威数据（稳定版）：事件 **0 = 8284**（躺床）、事件 **1 = 8268** 在卧室旁 `(Y=40,X=37)`。
+- 制作器对这两份文件 **roundtrip 字节级无损**；若开场贴图异常，优先怀疑引擎/存档把**剧情推进后的 D/S**写回了模板，而不是制作器编解码错误。
+- 引擎自 2026-07-28 起：`SaveGame(0)` **不再覆盖** `alldef`/`allsin`（只写 `ranger`）。进度请存 **1–5 槽**（`D1`/`S1` …）。
+- 回归说明与单测：`cpp_reborn/doc/REGRESSION_SCRIPT_101.md`、`tests/test_formats.py::test_alldef_scene0_opening_pics`。
 
 重新生成界面截图（需本地游戏数据）：
 
@@ -78,6 +85,7 @@ Kdef 脚本、对话库、场景事件挂接（DData）、SData 事件层俯视�
 ### 4. 大地图
 
 `earth/surface/building/*.002`（480×480）+ `mmap` 砖库主色俯视图。
+可叠加 **场景入口**（来自存档 `ranger` 场景元数据 `MainEntranceX/Y`），地图上显示坐标与场景名；右侧列表点击可定位。
 
 ![大地图](docs/screenshots/04_world_map.png)
 

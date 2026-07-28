@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Callable, List, Optional, Sequence, Tuple
 
 from PySide6.QtCore import Qt, Signal, QPoint, QRect, QSize
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QFont
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QFont, QBrush
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSpinBox, QPushButton,
     QCheckBox, QScrollArea, QFrame, QToolTip, QSizePolicy,
@@ -35,6 +36,16 @@ def _hash_color(code: int) -> Tuple[int, int, int]:
     return (40 + r // 3, 40 + g // 3, 40 + b // 3)
 
 
+@dataclass
+class MapMarker:
+    """Named point drawn on top of the grid (engine x/y axes)."""
+
+    x: int
+    y: int
+    label: str
+    color: Tuple[int, int, int] = (255, 64, 200)
+
+
 class MapCanvas(QWidget):
     """Paints a rectangular grid of cell colors; supports click + hover tooltip."""
 
@@ -50,6 +61,8 @@ class MapCanvas(QWidget):
         # flat list row-major by engine (x,y): colors[x][y]
         self.colors: List[List[Tuple[int, int, int]]] = []
         self.overlay: List[List[Optional[Tuple[int, int, int, int]]]] = []  # RGBA marks
+        self.markers: List[MapMarker] = []
+        self.show_marker_labels = True
         self.selected: Optional[Tuple[int, int]] = None
         self._tooltip_fn: Optional[Callable[[int, int], str]] = None
         self._pixmap_fn: Optional[Callable[[int, int], Optional[QPixmap]]] = None
@@ -66,6 +79,16 @@ class MapCanvas(QWidget):
         self.height_cells = len(colors[0]) if colors else 0
         self.overlay = overlay or []
         self._update_size()
+        self.update()
+
+    def set_markers(
+        self,
+        markers: Optional[Sequence[MapMarker]] = None,
+        *,
+        show_labels: bool = True,
+    ) -> None:
+        self.markers = list(markers or [])
+        self.show_marker_labels = show_labels
         self.update()
 
     def set_cell_size(self, px: int) -> None:
@@ -89,6 +112,7 @@ class MapCanvas(QWidget):
 
     def paintEvent(self, _event) -> None:
         p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
         p.fillRect(self.rect(), QColor(20, 20, 20))
         cell = self.cell
         for x in range(self.width_cells):
@@ -102,10 +126,48 @@ class MapCanvas(QWidget):
                     ov = self.overlay[x][y]
                     if ov is not None:
                         p.fillRect(x * cell, y * cell, cell, cell, QColor(*ov))
+        self._paint_markers(p)
         if self.selected is not None:
             sx, sy = self.selected
             p.setPen(QPen(QColor(255, 255, 0), max(1, cell // 4)))
             p.drawRect(sx * cell, sy * cell, cell - 1, cell - 1)
+
+    def _paint_markers(self, p: QPainter) -> None:
+        if not self.markers:
+            return
+        cell = self.cell
+        # Keep pin readable even when cell is 2px.
+        pin = max(6, cell + 2)
+        font = QFont()
+        font.setPointSize(max(8, min(11, 6 + cell // 2)))
+        p.setFont(font)
+        for m in self.markers:
+            if not (0 <= m.x < self.width_cells and 0 <= m.y < self.height_cells):
+                continue
+            cx = m.x * cell + cell // 2
+            cy = m.y * cell + cell // 2
+            color = QColor(*m.color)
+            p.setPen(QPen(QColor(0, 0, 0, 200), 1))
+            p.setBrush(QBrush(color))
+            p.drawEllipse(cx - pin // 2, cy - pin // 2, pin, pin)
+            if not self.show_marker_labels or not m.label:
+                continue
+            text = m.label
+            metrics = p.fontMetrics()
+            tw = metrics.horizontalAdvance(text) + 6
+            th = metrics.height() + 2
+            tx = cx + pin // 2 + 2
+            ty = cy - th // 2
+            # Prefer keeping label inside canvas when near right/bottom edge.
+            if tx + tw > self.width():
+                tx = cx - pin // 2 - tw - 2
+            if ty < 0:
+                ty = 0
+            if ty + th > self.height():
+                ty = self.height() - th
+            p.fillRect(tx, ty, tw, th, QColor(0, 0, 0, 180))
+            p.setPen(QColor(255, 255, 255))
+            p.drawText(tx + 3, ty + metrics.ascent() + 1, text)
 
     def _pos_to_cell(self, pos) -> Optional[Tuple[int, int]]:
         x = int(pos.x() // self.cell)
@@ -154,6 +216,10 @@ class MapOverviewPanel(QWidget):
         self._set_code: Optional[Callable[[int, int, int], None]] = None
         self._ground_code: Optional[Callable[[int, int], int]] = None
         self._event_code: Optional[Callable[[int, int], int]] = None
+        self._event_pic_code: Optional[Callable[[int, int], int]] = None
+        self._markers: List[MapMarker] = []
+        self._show_marker_labels = True
+        self._marker_lookup: dict[Tuple[int, int], List[str]] = {}
         self._w = 64
         self._h = 64
         self.tile_pack: Optional[RleTilePack] = None
@@ -177,6 +243,16 @@ class MapOverviewPanel(QWidget):
         self.chk_events.setChecked(True)
         self.chk_events.toggled.connect(lambda _: self.rebuild())
         bar.addWidget(self.chk_events)
+        self.chk_markers = QCheckBox("标记点")
+        self.chk_markers.setChecked(True)
+        self.chk_markers.toggled.connect(lambda _: self.rebuild())
+        self.chk_markers.setVisible(False)
+        bar.addWidget(self.chk_markers)
+        self.chk_marker_labels = QCheckBox("标记文字")
+        self.chk_marker_labels.setChecked(True)
+        self.chk_marker_labels.toggled.connect(lambda _: self.rebuild())
+        self.chk_marker_labels.setVisible(False)
+        bar.addWidget(self.chk_marker_labels)
         self.chk_true_color = QCheckBox("真砖主色")
         self.chk_true_color.setChecked(True)
         self.chk_true_color.toggled.connect(lambda _: self.rebuild())
@@ -231,6 +307,8 @@ class MapOverviewPanel(QWidget):
         *,
         ground_code: Optional[Callable[[int, int], int]] = None,
         event_code: Optional[Callable[[int, int], int]] = None,
+        event_pic_code: Optional[Callable[[int, int], int]] = None,
+        markers: Optional[Sequence[MapMarker]] = None,
         tile_pack: Optional[RleTilePack] = None,
         palette: Optional[Sequence[Tuple[int, int, int]]] = None,
     ) -> None:
@@ -239,10 +317,53 @@ class MapOverviewPanel(QWidget):
         self._set_code = set_code
         self._ground_code = ground_code or get_code
         self._event_code = event_code
+        self._event_pic_code = event_pic_code
+        self._markers = list(markers or [])
+        self._marker_lookup = {}
+        for m in self._markers:
+            self._marker_lookup.setdefault((m.x, m.y), []).append(m.label)
         self.tile_pack = tile_pack
         self.palette = list(palette) if palette else None
         self.chk_events.setVisible(event_code is not None)
+        has_markers = bool(self._markers)
+        self.chk_markers.setVisible(has_markers)
+        self.chk_marker_labels.setVisible(has_markers)
+        if has_markers:
+            self.chk_markers.setChecked(True)
+            self.chk_marker_labels.setChecked(True)
         self.rebuild()
+
+    def set_markers(
+        self,
+        markers: Optional[Sequence[MapMarker]] = None,
+        *,
+        show: Optional[bool] = None,
+        show_labels: Optional[bool] = None,
+    ) -> None:
+        self._markers = list(markers or [])
+        self._marker_lookup = {}
+        for m in self._markers:
+            self._marker_lookup.setdefault((m.x, m.y), []).append(m.label)
+        has_markers = bool(self._markers)
+        self.chk_markers.setVisible(has_markers)
+        self.chk_marker_labels.setVisible(has_markers)
+        if show is not None:
+            self.chk_markers.setChecked(show)
+        if show_labels is not None:
+            self.chk_marker_labels.setChecked(show_labels)
+        self.rebuild()
+
+    def ensure_visible(self, x: int, y: int) -> None:
+        """Scroll so that cell (x,y) is roughly centered."""
+        cell = self.canvas.cell
+        cx = x * cell + cell // 2
+        cy = y * cell + cell // 2
+        self.scroll.ensureVisible(
+            cx,
+            cy,
+            max(40, self.scroll.viewport().width() // 3),
+            max(40, self.scroll.viewport().height() // 3),
+        )
 
     def _on_adjust_toggled(self, on: bool) -> None:
         self.adjust_mode = on
@@ -279,6 +400,13 @@ class MapOverviewPanel(QWidget):
             colors.append(crow)
             overlay.append(orow)
         self.canvas.set_grid(colors, overlay)
+        if self.chk_markers.isChecked() and self._markers:
+            self.canvas.set_markers(
+                self._markers,
+                show_labels=self.chk_marker_labels.isChecked(),
+            )
+        else:
+            self.canvas.set_markers([])
 
     def _on_click(self, x: int, y: int) -> None:
         self.cellSelected.emit(x, y)
@@ -298,15 +426,32 @@ class MapOverviewPanel(QWidget):
         code = self._get_code(x, y)
         gcode = self._ground_code(x, y) if self._ground_code else code
         lines = [f"格 ({x}, {y})", f"当前值: {code}", f"地面代码: {gcode}"]
+        marks = self._marker_lookup.get((x, y))
+        if marks:
+            lines.append("入口: " + "；".join(marks))
+        eid = -1
         if self._event_code is not None:
-            lines.append(f"事件: {self._event_code(x, y)}")
-        idx = code_to_tile_index(gcode)
-        lines.append(f"贴图索引: {idx} (=代码/2)")
+            eid = self._event_code(x, y)
+            lines.append(f"事件: {eid}")
+        g_idx = code_to_tile_index(gcode)
+        lines.append(f"地面砖 smp: {g_idx} (=地面/2)")
+
+        preview_idx = g_idx
+        epic = 0
+        if eid >= 0 and self._event_pic_code is not None:
+            epic = int(self._event_pic_code(x, y))
+            if epic != 0:
+                e_idx = code_to_tile_index(epic)
+                lines.append(f"事件贴图代码: {epic}")
+                lines.append(f"事件 smp: {e_idx} (=贴图/2)")
+                if epic > 0:
+                    preview_idx = e_idx
+
         self.lbl_info.setText("\n".join(lines))
-        pm = self._tile_pixmap(idx)
+        pm = self._tile_pixmap(preview_idx)
         if pm is None:
             self.preview.setPixmap(QPixmap())
-            self.preview.setText("无贴图")
+            self.preview.setText("无贴图" if epic >= 0 else "负贴图")
         else:
             self.preview.setPixmap(
                 pm.scaled(120, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -330,11 +475,25 @@ class MapOverviewPanel(QWidget):
         gcode = self._ground_code(x, y) if self._ground_code else code
         idx = code_to_tile_index(gcode)
         parts = [f"({x},{y}) 值={code} 地面={gcode} 砖={idx}"]
+        marks = self._marker_lookup.get((x, y))
+        if marks and self.chk_markers.isChecked():
+            parts.append("入口=" + "；".join(marks))
         if self._event_code is not None:
-            parts.append(f"事件={self._event_code(x, y)}")
+            eid = self._event_code(x, y)
+            parts.append(f"事件={eid}")
+            if eid >= 0 and self._event_pic_code is not None:
+                epic = int(self._event_pic_code(x, y))
+                if epic != 0:
+                    parts.append(f"贴图={epic} smp={code_to_tile_index(epic)}")
         return "\n".join(parts)
 
     def _tooltip_pixmap(self, x: int, y: int) -> Optional[QPixmap]:
+        if self._event_code is not None and self._event_pic_code is not None:
+            eid = self._event_code(x, y)
+            if eid >= 0:
+                epic = int(self._event_pic_code(x, y))
+                if epic > 0:
+                    return self._tile_pixmap(code_to_tile_index(epic))
         if not self._ground_code:
             return None
         return self._tile_pixmap(code_to_tile_index(self._ground_code(x, y)))

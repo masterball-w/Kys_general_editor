@@ -108,9 +108,9 @@ OPCODE_ARGS: dict[int, List[ArgSpec]] = {
         ArgSpec("DData[2] 手动脚本", "jump"),
         ArgSpec("DData[3] 物品脚本", "jump"),
         ArgSpec("DData[4] 踩上脚本", "jump"),
-        ArgSpec("DData[5] 贴图", "int"),
-        ArgSpec("DData[6]", "int"),
-        ArgSpec("DData[7]", "int"),
+        ArgSpec("DData[5] 贴图当前(偶数代码, /2=smp)", "pic"),
+        ArgSpec("DData[6] 贴图结束", "pic"),
+        ArgSpec("DData[7] 贴图起始", "pic"),
         ArgSpec("DData[8]", "int"),
         ArgSpec("DData[9] 坐标Y", "int"),
         ArgSpec("DData[10] 坐标X", "int"),
@@ -352,6 +352,14 @@ def resolve_arg_value(ctx, kind: str, value: int) -> str:
             return {0: "阴性", 1: "阳性", 2: "调和"}.get(value, str(value))
         if kind == "flag":
             return "是/开" if value else "否/关"
+        if kind == "pic":
+            if value == -2:
+                return "保持原值(-2)"
+            if value == 0:
+                return "清除贴图(0)"
+            from kys_formats.rle_tile import format_pic_code
+
+            return format_pic_code(value)
     except Exception as e:
         return f"(解析失败: {e})"
     return str(value)

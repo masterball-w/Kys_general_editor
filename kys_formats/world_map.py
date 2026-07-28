@@ -3,13 +3,67 @@
 from __future__ import annotations
 
 import struct
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 
 from .backup import atomic_write, backup_file
 
+if TYPE_CHECKING:
+    from .ranger import RangerArchive
+
 WORLD_SIZE = 480
 WORLD_BYTES = WORLD_SIZE * WORLD_SIZE * 2  # 460800
+
+# Scene record word indices (Pascal TScene / cpp Scene.h)
+_SCENE_MAIN_ENTRANCE_Y1 = 10
+_SCENE_MAIN_ENTRANCE_X1 = 11
+_SCENE_MAIN_ENTRANCE_Y2 = 12
+_SCENE_MAIN_ENTRANCE_X2 = 13
+
+
+@dataclass
+class SceneEntrance:
+    """One big-map entrance cell for a scene (MainEntrance1 or 2)."""
+
+    scene_id: int
+    name: str
+    which: int  # 1 or 2
+    x: int  # MainEntranceX — engine / .002 X axis
+    y: int  # MainEntranceY
+
+    @property
+    def label(self) -> str:
+        tag = f"#{self.which}" if self.which > 1 else ""
+        return f"{self.scene_id}:{self.name}{tag} ({self.x},{self.y})"
+
+
+def collect_scene_entrances(
+    ranger: "RangerArchive",
+    *,
+    map_size: int = WORLD_SIZE,
+) -> List[SceneEntrance]:
+    """Collect valid MainEntranceX/Y points from ranger scene metadata."""
+    out: List[SceneEntrance] = []
+    if ranger is None or ranger.scenes.count == 0:
+        return out
+    for i in range(ranger.scenes.count):
+        rec = ranger.scenes.records[i]
+        if len(rec) <= _SCENE_MAIN_ENTRANCE_X2:
+            continue
+        name = ranger.scene_name(i).strip() or f"场景{i}"
+        pairs = (
+            (1, rec[_SCENE_MAIN_ENTRANCE_X1], rec[_SCENE_MAIN_ENTRANCE_Y1]),
+            (2, rec[_SCENE_MAIN_ENTRANCE_X2], rec[_SCENE_MAIN_ENTRANCE_Y2]),
+        )
+        for which, x, y in pairs:
+            if not (0 <= x < map_size and 0 <= y < map_size):
+                continue
+            # Skip duplicate MainEntrance2 when it coincides with #1.
+            if which == 2 and out and out[-1].scene_id == i and out[-1].x == x and out[-1].y == y:
+                continue
+            out.append(SceneEntrance(i, name, which, int(x), int(y)))
+    return out
 
 
 class WorldLayerGrid:

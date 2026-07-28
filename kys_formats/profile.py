@@ -8,7 +8,7 @@ item icons / fight / eft art are stored.
 from __future__ import annotations
 
 import struct
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
@@ -113,6 +113,34 @@ class AssetPaths:
     )
 
 
+def probe_ranger_inventory_base(role_offset: int, magic_words: int) -> int:
+    """Byte offset where ranger inventory slots start (42=前传, 44=经典含银两字)."""
+    best_base = 42
+    best_score = -1
+    for base in (44, 42):
+        nbytes = role_offset - base
+        if nbytes < 0 or nbytes % 4 != 0:
+            continue
+        slots = nbytes // 4
+        score = 0
+        if base == 44 and slots in (200, 250):
+            score += 20
+        if base == 42 and slots in (400, 401):
+            score += 20
+        if magic_words == 68 and base == 44:
+            score += 8
+        if magic_words in (93, 111) and base == 42:
+            score += 8
+        if slots == 200 and base == 44:
+            score += 5
+        if slots == 400 and base == 42:
+            score += 5
+        if score > best_score:
+            best_score = score
+            best_base = base
+    return best_base
+
+
 @dataclass(frozen=True)
 class GameProfile:
     id: str
@@ -123,12 +151,18 @@ class GameProfile:
     magic_words: int = 111
     shop_words: int = 18
     inventory_slots: int = 400
+    # First inventory slot byte offset in ranger header (42 or 44)
+    ranger_inventory_base: int = 42
     war: WarLayout = field(default_factory=lambda: WAR_LAYOUT_PROMISE)
     save_subdir: str = "save"
     resource_subdir: str = "resource"
     assets: AssetPaths = field(default_factory=AssetPaths)
     # Prefer this encoding when auto-detecting text (hint only)
     default_text_encoding: str = "auto"
+
+    @property
+    def ranger_has_money_word(self) -> bool:
+        return self.ranger_inventory_base == 44
 
 
 PROFILE_PROMISE = GameProfile(
@@ -137,6 +171,7 @@ PROFILE_PROMISE = GameProfile(
     magic_words=111,
     shop_words=18,
     inventory_slots=400,
+    ranger_inventory_base=42,
     war=WAR_LAYOUT_PROMISE,
     assets=AssetPaths(
         heads_mode="pic",
@@ -152,6 +187,7 @@ PROFILE_CLASSIC = GameProfile(
     magic_words=68,
     shop_words=15,
     inventory_slots=200,
+    ranger_inventory_base=44,
     war=WAR_LAYOUT_CLASSIC,
     assets=AssetPaths(
         heads_mode="png_dir",
@@ -163,16 +199,9 @@ PROFILE_CLASSIC = GameProfile(
     default_text_encoding="big5",
 )
 
-# Alias for this repository's game
-PROFILE_GODSDEVILS = replace(
-    PROFILE_CLASSIC,
-    id="godsdevils",
-    display_name="天龙八部 / GodsDevils",
-)
-
 PROFILES: dict[str, GameProfile] = {
     p.id: p
-    for p in (PROFILE_PROMISE, PROFILE_CLASSIC, PROFILE_GODSDEVILS)
+    for p in (PROFILE_PROMISE, PROFILE_CLASSIC)
 }
 
 
@@ -264,6 +293,7 @@ def detect_profile(data_root: str | Path) -> GameProfile:
     magic_w = PROFILE_PROMISE.magic_words
     shop_w = PROFILE_PROMISE.shop_words
     inv = PROFILE_PROMISE.inventory_slots
+    inv_base = PROFILE_PROMISE.ranger_inventory_base
     war_layout = WAR_LAYOUT_PROMISE
     assets = PROFILE_PROMISE.assets
     encoding = "auto"
@@ -288,7 +318,6 @@ def detect_profile(data_root: str | Path) -> GameProfile:
         idx = idx_path.read_bytes()
         if len(idx) >= 24:
             role_o, item_o, scene_o, magic_o, shop_o, total = struct.unpack_from("<6i", idx, 0)
-            inv = max(0, (role_o - 42) // 4)
             grp = grp_path.read_bytes()
             mw = _probe_table_words(grp, magic_o, shop_o, (68, 93, 111))
             if mw:
@@ -302,6 +331,8 @@ def detect_profile(data_root: str | Path) -> GameProfile:
                     break
             if sw:
                 shop_w = sw
+            inv_base = probe_ranger_inventory_base(role_o, magic_w)
+            inv = max(0, (role_o - inv_base) // 4)
 
     # War.sta
     war_path = None
@@ -339,12 +370,11 @@ def detect_profile(data_root: str | Path) -> GameProfile:
         encoding = "big5"
         pid = "classic"
         display = "经典 KYS (自动探测)"
-        if (root / "list" / "start.txt").is_file() or (root / "item").is_dir():
-            pid = "godsdevils"
-            display = "天龙八部 / GodsDevils (自动探测)"
+        inv_base = 44 if inv_base == 42 and magic_w == 68 else inv_base
     else:
         pid = "promise"
         display = "金庸群侠前传 (自动探测)"
+        inv_base = 42 if inv_base == 44 else inv_base
 
     return GameProfile(
         id=pid,
@@ -355,6 +385,7 @@ def detect_profile(data_root: str | Path) -> GameProfile:
         magic_words=magic_w,
         shop_words=shop_w,
         inventory_slots=max(inv, 1),
+        ranger_inventory_base=inv_base,
         war=war_layout,
         assets=assets,
         default_text_encoding=encoding,
