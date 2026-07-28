@@ -37,6 +37,9 @@ class RangerLayout:
     magic_words: int = MAGIC_WORDS
     shop_words: int = SHOP_WORDS
     inventory_slots: int = INVENTORY_SLOTS
+    team_offset: int = 30
+    team_count: int = 6
+    money_offset: int = -1
     inventory_base: int = 42
 
     @classmethod
@@ -48,6 +51,9 @@ class RangerLayout:
             magic_words=profile.magic_words,
             shop_words=profile.shop_words,
             inventory_slots=profile.inventory_slots,
+            team_offset=profile.ranger_team_offset,
+            team_count=profile.ranger_team_count,
+            money_offset=profile.ranger_money_offset,
             inventory_base=profile.ranger_inventory_base,
         )
 
@@ -233,10 +239,13 @@ class RangerArchive:
         h.sface = _i16(d, 24)
         h.ship_face = _i16(d, 26)
         h.game_time = _i16(d, 28)
-        h.team = [_i16(d, 30 + i * 2) for i in range(6)]
+        h.team = [_i16(d, self.layout.team_offset + i * 2) for i in range(self.layout.team_count)]
+        while len(h.team) < self.layout.team_count:
+            h.team.append(-1)
+        h.money = 0
+        if self.layout.money_offset >= 0:
+            h.money = _i16(d, self.layout.money_offset)
         inv_base = self.layout.inventory_base
-        if self.layout.inventory_base == 44:
-            h.money = _i16(d, 42)
         inv_bytes = max(0, self.role_offset - inv_base)
         slots = inv_bytes // 4
         h.inventory = []
@@ -284,11 +293,15 @@ class RangerArchive:
         _set_i16(header, 24, h.sface)
         _set_i16(header, 26, h.ship_face)
         _set_i16(header, 28, h.game_time)
-        for i in range(6):
-            _set_i16(header, 30 + i * 2, h.team[i] if i < len(h.team) else -1)
+        for i in range(self.layout.team_count):
+            _set_i16(
+                header,
+                self.layout.team_offset + i * 2,
+                h.team[i] if i < len(h.team) else -1,
+            )
         inv_base = self.layout.inventory_base
-        if inv_base == 44:
-            _set_i16(header, 42, h.money)
+        if self.layout.money_offset >= 0:
+            _set_i16(header, self.layout.money_offset, h.money)
         inv_slots = (self.role_offset - inv_base) // 4
         for i in range(inv_slots):
             slot = h.inventory[i] if i < len(h.inventory) else InventorySlot(-1, 0)

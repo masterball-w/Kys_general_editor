@@ -236,6 +236,41 @@ def test_event_rollback_collect_modify():
     assert 1 in scripts
 
 
+def test_probe_ranger_header_tlbb_mod():
+    from pathlib import Path
+
+    from kys_formats.ranger_header import probe_ranger_header_layout
+
+    p = Path(r"D:\program\misc\kys_tlbb_debug\kys-awaken\save\r1.grp")
+    if not p.is_file():
+        pytest.skip("kys-awaken r1.grp not present")
+    grp = p.read_bytes()
+    lay = probe_ranger_header_layout(836, 68, grp[:836], role_count=128)
+    assert lay.team_offset == 30
+    assert lay.team_count == 3
+    assert lay.inventory_base == 36
+
+
+def test_ranger_empty_team_tlbb_mod():
+    from pathlib import Path
+
+    from kys_formats.profile import detect_profile
+    from kys_formats.ranger import RangerArchive, RangerLayout
+
+    root = Path(r"D:\program\misc\kys_tlbb_debug\kys-awaken")
+    if not (root / "save" / "r1.grp").is_file():
+        pytest.skip("kys-awaken data not present")
+    profile = detect_profile(root)
+    assert profile.ranger_team_offset == 30
+    assert profile.ranger_team_count == 3
+    arc = RangerArchive(RangerLayout.from_profile(profile))
+    arc.load(root / "save", 1)
+    # Only 3 team words on disk; must not pull inventory at byte 36+ into team[1..2]
+    assert len(arc.header.team) == 3
+    assert arc.header.team[1] == -1
+    assert arc.header.team[2] == -1
+
+
 def test_event_progress_flag():
     from kys_formats.event_progress import event_progress_flag, event_runtime_changed
     from kys_formats.scene_data import SceneEventData
