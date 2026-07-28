@@ -172,7 +172,10 @@ class SaveEditorWidget(QWidget):
         h.sy = self.sp_sy.value()
         h.game_time = self.sp_gametime.value()
         team_n = self.ctx.profile.ranger_team_count if self.ctx.profile else len(self.team_spins)
-        h.team = [self.team_spins[i].value() for i in range(team_n)]
+        while len(h.team) < team_n:
+            h.team.append(-1)
+        for i in range(team_n):
+            h.team[i] = self.team_spins[i].value()
         if self.ctx.profile and self.ctx.profile.ranger_has_money_word:
             h.money = self.sp_money.value()
         self.ctx.statusMessage.emit("总览已应用到内存（请点保存）")

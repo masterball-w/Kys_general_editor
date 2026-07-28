@@ -247,8 +247,9 @@ def test_probe_ranger_header_tlbb_mod():
     grp = p.read_bytes()
     lay = probe_ranger_header_layout(836, 68, grp[:836], role_count=128)
     assert lay.team_offset == 30
-    assert lay.team_count == 3
-    assert lay.inventory_base == 36
+    assert lay.team_count == 6
+    assert lay.inventory_base == 44
+    assert lay.money_offset == 42
 
 
 def test_ranger_empty_team_tlbb_mod():
@@ -262,13 +263,14 @@ def test_ranger_empty_team_tlbb_mod():
         pytest.skip("kys-awaken data not present")
     profile = detect_profile(root)
     assert profile.ranger_team_offset == 30
-    assert profile.ranger_team_count == 3
+    assert profile.ranger_team_count == 6
+    assert profile.ranger_inventory_base == 44
     arc = RangerArchive(RangerLayout.from_profile(profile))
     arc.load(root / "save", 1)
-    # Only 3 team words on disk; must not pull inventory at byte 36+ into team[1..2]
-    assert len(arc.header.team) == 3
-    assert arc.header.team[1] == -1
-    assert arc.header.team[2] == -1
+    assert len(arc.header.team) == 6
+    # Bytes 36-41 are team[3..5], not inventory (inv starts @44 for role_o=836).
+    assert arc.header.team[3] == 8
+    assert arc.header.team[4] == 1
 
 
 def test_event_progress_flag():

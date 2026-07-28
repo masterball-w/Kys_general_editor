@@ -44,14 +44,9 @@ def _score_team_block(header: bytes, team_off: int, count: int, role_count: int)
 
 
 def _team_count_before_inventory(inv_base: int, money_offset: int) -> int:
-    """How many int16 team slots fit between byte 30 and inventory / money."""
-    if money_offset >= STANDARD_TEAM_OFFSET:
-        end = money_offset
-    else:
-        end = inv_base
-    if end <= STANDARD_TEAM_OFFSET:
-        return 0
-    return max(0, min(MAX_TEAM_SLOTS, (end - STANDARD_TEAM_OFFSET) // 2))
+    """Team list length on disk (Pascal / cpp_reborn always uses 6 at byte 30)."""
+    _ = inv_base, money_offset
+    return MAX_TEAM_SLOTS
 
 
 def probe_ranger_header_layout(
@@ -100,10 +95,11 @@ def probe_ranger_header_layout(
             total = slot_score + ts
             if inv_base == 42 and slots in (400, 401) and team_cnt == 6:
                 total += 12
-            if inv_base == 44 and slots == 200 and money_off == 42 and team_cnt == 6:
-                total += 12
-            if inv_base == 36 and slots == 200 and team_cnt == 3:
-                total += 15
+            if inv_base == 44 and slots in (198, 199, 200) and money_off == 42 and team_cnt == 6:
+                total += 20
+            if inv_base == 36:
+                # inv@36 overlaps team[3..5] (bytes 36-41); never use for KYS headers.
+                total -= 40
             if total > best_score:
                 best_score = total
                 best = RangerHeaderLayout(
