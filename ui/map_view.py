@@ -49,7 +49,8 @@ class MapMarker:
 class MapCanvas(QWidget):
     """Paints a rectangular grid of cell colors; supports click + hover tooltip."""
 
-    cellClicked = Signal(int, int)  # x, y (engine axes)
+    cellClicked = Signal(int, int)  # x, y (engine axes), left button
+    cellRightClicked = Signal(int, int)
     cellHovered = Signal(int, int)
 
     def __init__(self, parent=None) -> None:
@@ -67,6 +68,7 @@ class MapCanvas(QWidget):
         self._tooltip_fn: Optional[Callable[[int, int], str]] = None
         self._pixmap_fn: Optional[Callable[[int, int], Optional[QPixmap]]] = None
         self._hover: Optional[Tuple[int, int]] = None
+        self._last_size: Tuple[int, int] = (0, 0)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
     def set_grid(
@@ -105,7 +107,12 @@ class MapCanvas(QWidget):
         self._pixmap_fn = pixmap_fn
 
     def _update_size(self) -> None:
-        self.setFixedSize(self.width_cells * self.cell, self.height_cells * self.cell)
+        w = self.width_cells * self.cell
+        h = self.height_cells * self.cell
+        if (w, h) == self._last_size:
+            return
+        self._last_size = (w, h)
+        self.setFixedSize(w, h)
 
     def sizeHint(self) -> QSize:
         return QSize(self.width_cells * self.cell, self.height_cells * self.cell)
@@ -170,11 +177,19 @@ class MapCanvas(QWidget):
             p.drawText(tx + 3, ty + metrics.ascent() + 1, text)
 
     def _pos_to_cell(self, pos) -> Optional[Tuple[int, int]]:
-        x = int(pos.x() // self.cell)
-        y = int(pos.y() // self.cell)
+        cell = self.cell
+        if cell <= 0:
+            return None
+        x = int(pos.x()) // cell
+        y = int(pos.y()) // cell
         if 0 <= x < self.width_cells and 0 <= y < self.height_cells:
             return x, y
         return None
+
+    def leaveEvent(self, event) -> None:
+        self._hover = None
+        QToolTip.hideText()
+        super().leaveEvent(event)
 
     def mousePressEvent(self, event) -> None:
         cell = self._pos_to_cell(event.position())
@@ -182,26 +197,20 @@ class MapCanvas(QWidget):
             return
         self.selected = cell
         self.update()
-        self.cellClicked.emit(cell[0], cell[1])
+        if event.button() == Qt.RightButton:
+            self.cellRightClicked.emit(cell[0], cell[1])
+        else:
+            self.cellClicked.emit(cell[0], cell[1])
 
     def mouseMoveEvent(self, event) -> None:
         cell = self._pos_to_cell(event.position())
         if cell is None:
             QToolTip.hideText()
+            self._hover = None
             return
         if cell != self._hover:
             self._hover = cell
             self.cellHovered.emit(cell[0], cell[1])
-        if self._tooltip_fn:
-            text = self._tooltip_fn(cell[0], cell[1])
-            # Rich tooltip with optional image
-            html = f"<div style='white-space:pre'>{text}</div>"
-            if self._pixmap_fn:
-                pm = self._pixmap_fn(cell[0], cell[1])
-                if pm is not None and not pm.isNull():
-                    # QToolTip can't embed QPixmap easily; show text + status-style note
-                    html += f"<br/><i>贴图 {pm.width()}×{pm.height()}（见右侧预览）</i>"
-            QToolTip.showText(event.globalPosition().toPoint(), html, self)
 
 
 class MapOverviewPanel(QWidget):
@@ -222,15 +231,22 @@ class MapOverviewPanel(QWidget):
         self._marker_lookup: dict[Tuple[int, int], List[str]] = {}
         self._w = 64
         self._h = 64
+        self._swap_display_xy = True
         self.tile_pack: Optional[RleTilePack] = None
         self.palette: Optional[List[Tuple[int, int, int]]] = None
         self.adjust_mode = False
+        # full: hover updates text+preview; coords: one-line hover (stable); off: click only
+        self.hover_inspect_mode = "full"
+        self._last_info_cell: Optional[Tuple[int, int]] = None
 
         root = QVBoxLayout(self)
         bar = QHBoxLayout()
         bar.addWidget(QLabel(title))
         self.btn_adjust = QPushButton("进入调整模式")
         self.btn_adjust.setCheckable(True)
+        self.btn_adjust.setToolTip(
+            "开启后才能在俯视图上用鼠标改格子的值；关闭时左键只选中、右键吸取笔刷。"
+        )
         self.btn_adjust.toggled.connect(self._on_adjust_toggled)
         bar.addWidget(self.btn_adjust)
         bar.addWidget(QLabel("色块"))
@@ -263,40 +279,89 @@ class MapOverviewPanel(QWidget):
         body = QHBoxLayout()
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(False)
-        self.scroll.setAlignment(Qt.AlignCenter)
+        self.scroll.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.scroll.setFrameShape(QFrame.NoFrame)
         self.canvas = MapCanvas()
         self.canvas.cellClicked.connect(self._on_click)
+        self.canvas.cellRightClicked.connect(self._on_right_click)
         self.canvas.cellHovered.connect(self._on_hover)
         self.scroll.setWidget(self.canvas)
         body.addWidget(self.scroll, 3)
 
         side = QVBoxLayout()
+        self._side_panel = QWidget()
+        self._side_panel.setFixedWidth(200)
+        side_inner = QVBoxLayout(self._side_panel)
+        side_inner.setContentsMargins(0, 0, 0, 0)
         self.lbl_info = QLabel("格: -")
         self.lbl_info.setWordWrap(True)
-        side.addWidget(self.lbl_info)
+        self.lbl_info.setFixedHeight(88)
+        side_inner.addWidget(self.lbl_info)
         self.preview = QLabel("贴图预览")
         self.preview.setFixedSize(128, 128)
         self.preview.setAlignment(Qt.AlignCenter)
         self.preview.setStyleSheet("background:#111;color:#888;border:1px solid #333;")
-        side.addWidget(self.preview)
+        side_inner.addWidget(self.preview)
         paint_row = QHBoxLayout()
         paint_row.addWidget(QLabel("笔刷值"))
         self.sp_brush = QSpinBox()
         self.sp_brush.setRange(-1, 32767)
         self.sp_brush.setValue(-1)
+        self.sp_brush.setToolTip("写入格子的事件号/图层值；-1 表示该格无事件。")
         paint_row.addWidget(self.sp_brush)
-        side.addLayout(paint_row)
-        self.lbl_hint = QLabel(
-            "调整模式：点击格子写入笔刷值。\n"
-            "悬停显示编号；右侧显示真实贴图块。"
-        )
+        side_inner.addLayout(paint_row)
+        self.lbl_hint = QLabel()
         self.lbl_hint.setWordWrap(True)
-        side.addWidget(self.lbl_hint)
-        side.addStretch()
+        self.lbl_hint.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.set_help_preset("generic")
+        side_inner.addWidget(self.lbl_hint)
+        side_inner.addStretch()
+        side.addWidget(self._side_panel)
         body.addLayout(side, 1)
         root.addLayout(body)
 
         self.canvas.set_tooltip_providers(self._tooltip_text, self._tooltip_pixmap)
+        self._help_preset = "generic"
+
+    def set_help_preset(self, preset: str) -> None:
+        """Update side-panel instructions (generic map vs SData event layer)."""
+        self._help_preset = preset
+        if preset == "sdata_event":
+            self.hover_inspect_mode = "coords"
+            self.lbl_hint.setText(
+                "【SData 事件层】格子里存的是事件号（与 DData 行号一致），-1=空。\n"
+                "① 先点「进入调整模式」才能改图。\n"
+                "② 左键：用笔刷值画到当前格（写入左侧「编辑层」，默认 3）。\n"
+                "③ 右键：未开调整模式→把该格事件号抄到笔刷；"
+                "已开调整模式→将该格清为 -1。\n"
+                "④ 右侧 64×64 表：行=X、列=Y，可直接改数字；与俯视图联动。\n"
+                "⑤ 悬停格子时请看俯视图右侧「格信息」，不要依赖浮动提示。\n"
+                "⑥ 改完务必「保存当前槽 SData」。红色半透明=层3有事件。"
+            )
+            self.btn_adjust.setText("进入调整模式（改格）")
+        else:
+            self.hover_inspect_mode = "full"
+            self.lbl_hint.setText(
+                "浏览：左键选中格；悬停看编号，右侧看贴图。\n"
+                "改值：先「进入调整模式」，左键写入笔刷值；"
+                "右键在未开模式时吸取笔刷、开模式时写 -1。"
+            )
+            self.btn_adjust.setText("进入调整模式")
+        self._on_adjust_toggled(self.adjust_mode)
+
+    def _visual_to_engine(self, vx: int, vy: int) -> Tuple[int, int]:
+        """Map canvas cell → on-disk / in-game (engine) coordinates."""
+        if self._swap_display_xy:
+            return vy, vx
+        return vx, vy
+
+    def _engine_to_visual(self, ex: int, ey: int) -> Tuple[int, int]:
+        """Engine coordinates → canvas cell for painting/selection."""
+        if self._swap_display_xy:
+            return ey, ex
+        return ex, ey
 
     def bind(
         self,
@@ -311,8 +376,10 @@ class MapOverviewPanel(QWidget):
         markers: Optional[Sequence[MapMarker]] = None,
         tile_pack: Optional[RleTilePack] = None,
         palette: Optional[Sequence[Tuple[int, int, int]]] = None,
+        swap_display_xy: bool = True,
     ) -> None:
         self._w, self._h = width, height
+        self._swap_display_xy = swap_display_xy
         self._get_code = get_code
         self._set_code = set_code
         self._ground_code = ground_code or get_code
@@ -354,10 +421,11 @@ class MapOverviewPanel(QWidget):
         self.rebuild()
 
     def ensure_visible(self, x: int, y: int) -> None:
-        """Scroll so that cell (x,y) is roughly centered."""
+        """Scroll so that engine cell (x,y) is roughly centered."""
+        vx, vy = self._engine_to_visual(x, y)
         cell = self.canvas.cell
-        cx = x * cell + cell // 2
-        cy = y * cell + cell // 2
+        cx = vx * cell + cell // 2
+        cy = vy * cell + cell // 2
         self.scroll.ensureVisible(
             cx,
             cy,
@@ -367,7 +435,14 @@ class MapOverviewPanel(QWidget):
 
     def _on_adjust_toggled(self, on: bool) -> None:
         self.adjust_mode = on
-        self.btn_adjust.setText("退出调整模式" if on else "进入调整模式")
+        if self._help_preset == "sdata_event":
+            self.btn_adjust.setText("退出调整模式（只浏览）" if on else "进入调整模式（改格）")
+        else:
+            self.btn_adjust.setText("退出调整模式" if on else "进入调整模式")
+        if on:
+            self.lbl_hint.setStyleSheet("color: #ffcc66;")
+        else:
+            self.lbl_hint.setStyleSheet("")
 
     def _on_cell_size(self, v: int) -> None:
         self.canvas.set_cell_size(v)
@@ -378,11 +453,12 @@ class MapOverviewPanel(QWidget):
         use_true = self.chk_true_color.isChecked() and self.tile_pack and self.palette
         colors: List[List[Tuple[int, int, int]]] = []
         overlay: List[List[Optional[Tuple[int, int, int, int]]]] = []
-        for x in range(self._w):
+        for vx in range(self._w):
             crow: List[Tuple[int, int, int]] = []
             orow: List[Optional[Tuple[int, int, int, int]]] = []
-            for y in range(self._h):
-                gcode = self._ground_code(x, y)
+            for vy in range(self._h):
+                ex, ey = self._visual_to_engine(vx, vy)
+                gcode = self._ground_code(ex, ey)
                 if use_true:
                     idx = code_to_tile_index(gcode)
                     if idx >= 0:
@@ -393,7 +469,7 @@ class MapOverviewPanel(QWidget):
                     crow.append(_hash_color(gcode))
                 mark = None
                 if self.chk_events.isChecked() and self._event_code is not None:
-                    ev = self._event_code(x, y)
+                    ev = self._event_code(ex, ey)
                     if ev >= 0:
                         mark = (255, 64, 64, 140)
                 orow.append(mark)
@@ -401,31 +477,99 @@ class MapOverviewPanel(QWidget):
             overlay.append(orow)
         self.canvas.set_grid(colors, overlay)
         if self.chk_markers.isChecked() and self._markers:
+            vis_markers = [
+                MapMarker(
+                    *self._engine_to_visual(m.x, m.y),
+                    m.label,
+                    m.color,
+                )
+                for m in self._markers
+            ]
             self.canvas.set_markers(
-                self._markers,
+                vis_markers,
                 show_labels=self.chk_marker_labels.isChecked(),
             )
         else:
             self.canvas.set_markers([])
 
-    def _on_click(self, x: int, y: int) -> None:
-        self.cellSelected.emit(x, y)
-        self._show_cell(x, y)
+    def _on_click(self, vx: int, vy: int) -> None:
+        ex, ey = self._visual_to_engine(vx, vy)
+        scroll_pos = self._preserve_scroll()
+        self.cellSelected.emit(ex, ey)
+        self._last_info_cell = None
+        self._show_cell(ex, ey)
         if self.adjust_mode and self._set_code is not None:
             val = self.sp_brush.value()
-            self._set_code(x, y, val)
-            self.cellEdited.emit(x, y, val)
+            self._set_code(ex, ey, val)
+            self.cellEdited.emit(ex, ey, val)
             self.rebuild()
+        self._restore_scroll(scroll_pos)
 
-    def _on_hover(self, x: int, y: int) -> None:
-        self._show_cell(x, y)
+    def _on_right_click(self, vx: int, vy: int) -> None:
+        ex, ey = self._visual_to_engine(vx, vy)
+        scroll_pos = self._preserve_scroll()
+        self.cellSelected.emit(ex, ey)
+        self._last_info_cell = None
+        self._show_cell(ex, ey)
+        if not self._get_code:
+            self._restore_scroll(scroll_pos)
+            return
+        cur = int(self._get_code(ex, ey))
+        if self.adjust_mode and self._set_code is not None:
+            self._set_code(ex, ey, -1)
+            self.cellEdited.emit(ex, ey, -1)
+            self.rebuild()
+            self._restore_scroll(scroll_pos)
+            return
+        self.sp_brush.setValue(cur)
+        self._restore_scroll(scroll_pos)
+
+    def _preserve_scroll(self) -> Tuple[int, int]:
+        return (
+            self.scroll.verticalScrollBar().value(),
+            self.scroll.horizontalScrollBar().value(),
+        )
+
+    def _restore_scroll(self, pos: Tuple[int, int]) -> None:
+        vy, hx = pos
+        self.scroll.verticalScrollBar().setValue(vy)
+        self.scroll.horizontalScrollBar().setValue(hx)
+
+    def _on_hover(self, vx: int, vy: int) -> None:
+        ex, ey = self._visual_to_engine(vx, vy)
+        if self.hover_inspect_mode == "off":
+            return
+        scroll_pos = self._preserve_scroll()
+        if self.hover_inspect_mode == "coords":
+            if self._last_info_cell == (ex, ey):
+                self._restore_scroll(scroll_pos)
+                return
+            self._last_info_cell = (ex, ey)
+            if self._get_code:
+                code = int(self._get_code(ex, ey))
+                eid = ""
+                if self._event_code is not None:
+                    eid = f"  层3事件={self._event_code(ex, ey)}"
+                ax = "（俯视图横=引擎Y，纵=引擎X）" if self._swap_display_xy else ""
+                self.lbl_info.setText(f"引擎格 (X={ex}, Y={ey})  值={code}{eid}{ax}")
+            self._restore_scroll(scroll_pos)
+            return
+        if self._last_info_cell == (ex, ey):
+            self._restore_scroll(scroll_pos)
+            return
+        self._last_info_cell = (ex, ey)
+        self._show_cell(ex, ey)
+        self._restore_scroll(scroll_pos)
 
     def _show_cell(self, x: int, y: int) -> None:
         if not self._get_code:
             return
         code = self._get_code(x, y)
         gcode = self._ground_code(x, y) if self._ground_code else code
-        lines = [f"格 ({x}, {y})", f"当前值: {code}", f"地面代码: {gcode}"]
+        lines = [f"引擎格 X={x}, Y={y}", f"当前值: {code}", f"地面代码: {gcode}"]
+        if self._swap_display_xy:
+            vx, vy = self._engine_to_visual(x, y)
+            lines.append(f"俯视图格 (列={vx}, 行={vy})")
         marks = self._marker_lookup.get((x, y))
         if marks:
             lines.append("入口: " + "；".join(marks))
@@ -453,9 +597,20 @@ class MapOverviewPanel(QWidget):
             self.preview.setPixmap(QPixmap())
             self.preview.setText("无贴图" if epic >= 0 else "负贴图")
         else:
+            self.preview.setText("")
             self.preview.setPixmap(
                 pm.scaled(120, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             )
+
+    def select_cell(self, x: int, y: int) -> None:
+        """Select engine coordinates (x, y)."""
+        scroll_pos = self._preserve_scroll()
+        vx, vy = self._engine_to_visual(x, y)
+        self.canvas.selected = (vx, vy)
+        self.canvas.update()
+        self._last_info_cell = None
+        self._show_cell(x, y)
+        self._restore_scroll(scroll_pos)
 
     def _tile_pixmap(self, idx: int) -> Optional[QPixmap]:
         if idx < 0 or not self.tile_pack or not self.palette:
@@ -497,8 +652,3 @@ class MapOverviewPanel(QWidget):
         if not self._ground_code:
             return None
         return self._tile_pixmap(code_to_tile_index(self._ground_code(x, y)))
-
-    def select_cell(self, x: int, y: int) -> None:
-        self.canvas.selected = (x, y)
-        self.canvas.update()
-        self._show_cell(x, y)

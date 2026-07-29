@@ -32,6 +32,7 @@ class WorldMapEditorWidget(QWidget):
         lay.addLayout(top)
         hint = QLabel(
             "大地图 480×480；地面色来自 earth + mmap 砖库主色。"
+            "俯视图横轴=引擎 Y、纵轴=引擎 X（与游戏内大地图朝向一致）。"
             "粉色点为场景入口（ranger MainEntranceX/Y）；"
             "右侧列表可定位。默认色块较小以便浏览；进入调整模式后点击写入笔刷值。"
         )

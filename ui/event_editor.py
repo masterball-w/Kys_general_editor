@@ -1060,36 +1060,54 @@ class EventEditorWidget(QWidget):
         self.sdata_layer = QSpinBox()
         self.sdata_layer.setRange(0, 5)
         self.sdata_layer.setValue(3)
+        self.sdata_layer.setToolTip("层 3 = 地图事件格（事件号）；一般只改这一层。")
         self.sdata_layer.valueChanged.connect(self._load_sdata)
         top.addWidget(self.sdata_layer)
         save = QPushButton("保存当前槽 SData")
         save.clicked.connect(self._save_sdata)
         top.addWidget(save)
         jump = QPushButton("选中格→编辑 DData")
+        jump.setToolTip("跳到「场景事件挂接」页，并选中该格上的事件号（层3）")
         jump.clicked.connect(self._jump_sdata_to_ddata)
         top.addWidget(jump)
+
+        self.sdata_overview = MapOverviewPanel("场景俯视图")
+        self.sdata_overview.set_help_preset("sdata_event")
+        self.sdata_overview.hover_inspect_mode = "coords"
+        brush_empty = QPushButton("笔刷=-1")
+        brush_empty.setToolTip("空事件格（引擎视为无事件）")
+        brush_empty.clicked.connect(lambda: self.sdata_overview.sp_brush.setValue(-1))
+        top.addWidget(brush_empty)
         top.addStretch()
         lay.addLayout(top)
         hint = QLabel(
-            "俯视图用层0地面贴图主色铺底，红色半透明为事件格。"
-            "调整模式写入「编辑层」当前值；悬停/点击右侧显示真实砖块。"
+            "本页改的是 Sn.grp：每个格子存「事件号」（-1=空），须与 DData 里该事件的 X/Y 一致，"
+            "游戏里才会显示/触发。俯视图已交换 XY 显示以贴合游戏视角；右侧数字表仍为引擎 X/Y。"
         )
         hint.setWordWrap(True)
         lay.addWidget(hint)
 
         split = QSplitter(Qt.Horizontal)
-        self.sdata_overview = MapOverviewPanel("场景俯视图")
         self.sdata_overview.cellSelected.connect(self._on_sdata_overview_select)
         self.sdata_overview.cellEdited.connect(self._on_sdata_overview_edit)
         split.addWidget(self.sdata_overview)
 
+        table_wrap = QWidget()
+        table_lay = QVBoxLayout(table_wrap)
+        table_lay.setContentsMargins(0, 0, 0, 0)
+        table_lay.addWidget(
+            QLabel("数值表（行= X，列= Y）：单击选中；双击跳转 DData；可直接编辑单元格数字。")
+        )
         self.sdata_table = QTableWidget(64, 64)
+        self.sdata_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.sdata_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.sdata_table.horizontalHeader().setDefaultSectionSize(28)
         self.sdata_table.verticalHeader().setDefaultSectionSize(18)
         self.sdata_table.cellChanged.connect(self._sdata_changed)
         self.sdata_table.cellDoubleClicked.connect(lambda *_: self._jump_sdata_to_ddata())
         self.sdata_table.cellClicked.connect(self._on_sdata_table_click)
-        split.addWidget(self.sdata_table)
+        table_lay.addWidget(self.sdata_table)
+        split.addWidget(table_wrap)
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 2)
         lay.addWidget(split)
@@ -1137,18 +1155,21 @@ class EventEditorWidget(QWidget):
         )
 
     def _on_sdata_overview_select(self, x: int, y: int) -> None:
-        self.sdata_table.setCurrentCell(x, y)
-        item = self.sdata_table.item(x, y)
-        if item:
-            try:
-                self.sdata_overview.sp_brush.setValue(int(item.text()))
-            except ValueError:
-                pass
+        # Do not setCurrentCell — it scrolls the 64×64 table and shakes the splitter.
+        self.sdata_overview.select_cell(x, y)
+        if not self.ctx.maps:
+            return
+        scene = self.sdata_scene_combo.get_id(silent=True)
+        layer = self.sdata_layer.value()
+        val = self.ctx.maps.get(scene, layer, x, y)
+        self.sdata_overview.sp_brush.setValue(int(val))
+        self.ctx.statusMessage.emit(f"SData 选中格 ({x},{y}) 层{layer}={val}")
 
     def _on_sdata_overview_edit(self, x: int, y: int, value: int) -> None:
         self.sdata_table.blockSignals(True)
         self.sdata_table.setItem(x, y, QTableWidgetItem(str(value)))
         self.sdata_table.blockSignals(False)
+        self.ctx.statusMessage.emit(f"SData 格 ({x},{y}) → {value}")
 
     def _on_sdata_table_click(self, row: int, col: int) -> None:
         self.sdata_overview.select_cell(row, col)
