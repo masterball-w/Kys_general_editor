@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 # Reuse battle-state names from magic (equipment BattleEffect)
+
 from .magic_meta import BATTLE_STATES
+
+if TYPE_CHECKING:
+    from .profile import EditorCompat
 
 ITEM_TYPES = {
     0: "剧情物品",
@@ -49,6 +55,13 @@ def item_type_display(v: int) -> str:
 
 def equip_type_display(v: int) -> str:
     return EQUIP_TYPES.get(v, f"部位({v})")
+
+
+def equip_types_for_compat(compat: "EditorCompat | None") -> dict:
+    """Equip slot choices for item editor combo (classic omits hat/shoes slots)."""
+    if compat is None or compat.item_hat_shoes_equip:
+        return EQUIP_TYPES
+    return {k: EQUIP_TYPES[k] for k in (-1, 0, 1)}
 
 
 def item_summary(rec: list, name: str = "") -> str:

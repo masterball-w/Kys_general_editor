@@ -32,6 +32,7 @@ class RoleEditorPanel(QWidget):
         self._rid = -1
         self._loading = False
         self._named_combos: list[NamedIdCombo] = []
+        self.ctx.profileChanged.connect(self._update_compat_ui)
 
         root = QHBoxLayout(self)
         splitter = QSplitter(Qt.Horizontal)
@@ -140,11 +141,12 @@ class RoleEditorPanel(QWidget):
         vf.addRow("内力上限 MaxMP[42]", self.sp_max_mp)
         self.detail_lay.addWidget(vitals)
 
-        combat = QGroupBox("战斗属性")
+        combat = QGroupBox("战斗属性（Role[43..45] 为 int16，天龙等 mod 可上千）")
         cf = QGridLayout(combat)
-        self.sp_att = self._spin(0, 200)
-        self.sp_spd = self._spin(0, 200)
-        self.sp_def = self._spin(0, 200)
+        stat_hi = 9999
+        self.sp_att = self._spin(0, stat_hi)
+        self.sp_spd = self._spin(0, stat_hi)
+        self.sp_def = self._spin(0, stat_hi)
         self.sp_apt = self._spin(0, 100)
         self.sp_ethics = self._spin(0, 100)
         self.sp_know = self._spin(0, 100)
@@ -201,10 +203,17 @@ class RoleEditorPanel(QWidget):
             ef.addRow(f"{EQUIP_SLOTS[i]} Equip[{i}]=[{23 + i}]", sp)
         self.detail_lay.addWidget(equip)
 
-        gongti = QGroupBox("功体 / 队伍扩展")
+        gongti = QGroupBox("功体（前传）")
         gf = QFormLayout(gongti)
         self.sp_gongti = self._id_combo("magic")
         self.sp_gongti_exam = self._spin(0, 65535)
+        gf.addRow("当前功体武功 Gongti[28]", self.sp_gongti)
+        gf.addRow("功体经验 GongtiExam[31](uint16)", self.sp_gongti_exam)
+        self.gongti_promise_box = gongti
+        self.detail_lay.addWidget(gongti)
+
+        team_ext = QGroupBox("队伍 / 状态扩展")
+        tf = QFormLayout(team_ext)
         self.sp_team_state = self._spin(-1, 999)
         self.sp_angry = self._spin(0, 100)
         self.sp_moveable = self._spin(-1, 1)
@@ -213,17 +222,15 @@ class RoleEditorPanel(QWidget):
         self.sp_impression = self._spin(-100, 100)
         self.sp_reset = self._spin(-1, 99)
         self.sp_diff = self._spin(-1, 99)
-        gf.addRow("当前功体武功 Gongti[28]", self.sp_gongti)
-        gf.addRow("功体经验 GongtiExam[31](uint16)", self.sp_gongti_exam)
-        gf.addRow("TeamState[29]", self.sp_team_state)
-        gf.addRow("怒气 Angry[30]", self.sp_angry)
-        gf.addRow("可移动 Moveable[32]", self.sp_moveable)
-        gf.addRow("技能点 AddSkillPoint[33]", self.sp_skill_pt)
-        gf.addRow("宠物数 PetAmount[34]", self.sp_pet)
-        gf.addRow("好感 Impression[35]", self.sp_impression)
-        gf.addRow("Reset[36]", self.sp_reset)
-        gf.addRow("difficulty[37]", self.sp_diff)
-        self.detail_lay.addWidget(gongti)
+        tf.addRow("TeamState[29]", self.sp_team_state)
+        tf.addRow("怒气 Angry[30]", self.sp_angry)
+        tf.addRow("可移动 Moveable[32]", self.sp_moveable)
+        tf.addRow("技能点 AddSkillPoint[33]", self.sp_skill_pt)
+        tf.addRow("宠物数 PetAmount[34]", self.sp_pet)
+        tf.addRow("好感 Impression[35]", self.sp_impression)
+        tf.addRow("Reset[36]", self.sp_reset)
+        tf.addRow("difficulty[37]", self.sp_diff)
+        self.detail_lay.addWidget(team_ext)
 
         book = QGroupBox("修炼")
         bkf = QFormLayout(book)
@@ -273,8 +280,18 @@ class RoleEditorPanel(QWidget):
         apply.clicked.connect(self._apply_current)
         self.detail_lay.addWidget(apply)
         self.detail_lay.addStretch()
+        self._update_compat_ui()
+
+    def _role_gongti_fields(self) -> bool:
+        p = self.ctx.profile
+        return bool(p and p.compat.role_gongti_fields)
+
+    def _update_compat_ui(self, *_args) -> None:
+        show = self._role_gongti_fields()
+        self.gongti_promise_box.setVisible(show)
 
     def refresh(self) -> None:
+        self._update_compat_ui()
         rebuild_named_combos(self._named_combos, self.ctx)
         self._rebuild_list()
 
@@ -435,10 +452,8 @@ class RoleEditorPanel(QWidget):
                 20: self.sp_poi.value(),
                 21: self.sp_phy.value(),
                 22: to_i16_from_u16(self.sp_exp_item.value()),
-                28: self.sp_gongti.get_id(),
                 29: self.sp_team_state.value(),
                 30: self.sp_angry.value(),
-                31: to_i16_from_u16(self.sp_gongti_exam.value()),
                 32: self.sp_moveable.value(),
                 33: self.sp_skill_pt.value(),
                 34: self.sp_pet.value(),
@@ -469,6 +484,9 @@ class RoleEditorPanel(QWidget):
                 61: self.sp_book.get_id(),
                 62: to_i16_from_u16(self.sp_exp_book.value()),
             }
+            if self._role_gongti_fields():
+                sets[28] = self.sp_gongti.get_id()
+                sets[31] = to_i16_from_u16(self.sp_gongti_exam.value())
             for i in range(5):
                 sets[23 + i] = self.sp_equip[i].get_id()
             for i in range(10):

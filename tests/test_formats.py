@@ -13,7 +13,7 @@ EDITOR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EDITOR))
 
 from kys_formats.encoding import decode_bytes, decode_talk_payload, encode_talk_payload
-from kys_formats.profile import detect_profile, find_data_root_candidates
+from kys_formats.profile import detect_profile, find_data_root_candidates, PROFILE_CLASSIC, PROFILE_PROMISE
 from kys_formats.ranger import RangerArchive, RangerLayout, decode_fixed_name, encode_fixed_name
 from kys_formats.war import WarArchive
 from kys_formats.kdef import KdefArchive
@@ -69,6 +69,16 @@ def test_detect_profile():
     assert profile.war.words in (93, 156)
 
 
+def test_profile_compat_flags():
+    assert PROFILE_CLASSIC.compat.magic_hurt_per_level
+    assert not PROFILE_CLASSIC.compat.item_hat_shoes_equip
+    assert not PROFILE_CLASSIC.compat.item_battle_wine_set
+    assert not PROFILE_CLASSIC.compat.magic_gongti_block
+    assert not PROFILE_CLASSIC.compat.role_gongti_fields
+    assert not PROFILE_PROMISE.compat.magic_hurt_per_level
+    assert PROFILE_PROMISE.compat.magic_gongti_block
+
+
 def test_ranger_roundtrip(tmp_path):
     profile = detect_profile(DATA_ROOT)
     arc = RangerArchive(RangerLayout.from_profile(profile))
@@ -114,6 +124,71 @@ def test_collect_scene_entrances():
     # Scene 0 (开场卧室所属场景) usually has a mapped entrance on the big map
     scene0 = [e for e in ents if e.scene_id == 0]
     assert scene0, "scene 0 should expose MainEntrance on big map"
+
+
+def test_rle_encode_roundtrip_opaque_count():
+    from kys_formats.rle_tile import (
+        RleTilePack,
+        load_palette,
+        find_palette,
+        encode_tile_image,
+        parse_tile_filename,
+    )
+
+    if not RES:
+        pytest.skip("no resource")
+    pal_path = find_palette(RES)
+    if not pal_path:
+        pytest.skip("no palette")
+    idx = RES / "mmap.idx"
+    grp = RES / "mmap.grp"
+    if not idx.is_file():
+        pytest.skip("no mmap")
+    pal = load_palette(pal_path)
+    pack = RleTilePack()
+    pack.load(idx, grp)
+    ti = next((i for i, t in enumerate(pack.tiles) if len(t) >= 8), None)
+    if ti is None:
+        pytest.skip("empty mmap")
+    img = pack.decode_tile(ti, pal, use_cache=False)
+    assert img is not None
+    xs, ys = pack.get_hotspot(ti)
+    block = encode_tile_image(img, pal, xs=xs, ys=ys)
+    pack2 = RleTilePack()
+    pack2.tiles = [block]
+    img2 = pack2.decode_tile(0, pal, use_cache=False)
+    assert img2 is not None
+    assert img2.size == img.size
+
+    def opaque(im):
+        return sum(1 for p in im.getdata() if p[3] >= 128)
+
+    assert opaque(img2) == opaque(img)
+    assert parse_tile_filename("mmap_0012.png") == 12
+    assert parse_tile_filename("12.png") == 12
+
+
+def test_world_layer_copy_paste(tmp_path):
+    from kys_formats.world_map import WorldLayerGrid, export_layer_region_json, load_layer_region_json
+
+    g = WorldLayerGrid()
+    g.size = 8
+    g.grid = [[0] * 8 for _ in range(8)]
+    g.set(1, 2, 100)
+    g.set(2, 3, 200)
+    data = g.copy_rect(1, 2, 2, 3)
+    assert data[0][0] == 100
+    g2 = WorldLayerGrid()
+    g2.size = 8
+    g2.grid = [[-1] * 8 for _ in range(8)]
+    n = g2.paste_rect(0, 0, data)
+    assert n == 4
+    assert g2.get(0, 0) == 100
+    payload = export_layer_region_json("earth", g, 1, 2, 2, 3)
+    p = tmp_path / "r.json"
+    p.write_text(__import__("json").dumps(payload), encoding="utf-8")
+    loaded = load_layer_region_json(p)
+    assert loaded["width"] == 2
 
 
 def test_war_roundtrip():

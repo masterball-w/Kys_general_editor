@@ -102,6 +102,10 @@ def cal_new_hurt_value(lv: int, min_val: int, max_val: int, proportion: int) -> 
     return int(round((lv * n) ** p) + min_val)
 
 
+# Classic 68-word magic: base hurt at each level (1..10) stored directly.
+CLASSIC_HURT_LEVEL_WORDS = tuple(range(18, 28))
+
+
 GROWTH_CURVE_HELP = (
     "成长曲线 HurtModulus → 引擎 CalNewHurtValue（战斗实际用等级-1 作为 lv）\n"
     "\n"

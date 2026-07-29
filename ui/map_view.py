@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, Signal, QPoint, QRect, QSize
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QFont, QBrush
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSpinBox, QPushButton,
-    QCheckBox, QScrollArea, QFrame, QToolTip, QSizePolicy,
+    QCheckBox, QScrollArea, QFrame, QToolTip, QSizePolicy, QComboBox,
 )
 
 from kys_formats.rle_tile import RleTilePack, code_to_tile_index
@@ -52,10 +52,15 @@ class MapCanvas(QWidget):
     cellClicked = Signal(int, int)  # x, y (engine axes), left button
     cellRightClicked = Signal(int, int)
     cellHovered = Signal(int, int)
+    # Drag interactions in *visual* cell coordinates
+    cellPressed = Signal(int, int, int)  # vx, vy, button
+    cellDragged = Signal(int, int, int)  # vx, vy, button
+    cellReleased = Signal(int, int, int)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)
         self.cell = 8
         self.width_cells = 64
         self.height_cells = 64
@@ -65,10 +70,14 @@ class MapCanvas(QWidget):
         self.markers: List[MapMarker] = []
         self.show_marker_labels = True
         self.selected: Optional[Tuple[int, int]] = None
+        # Inclusive visual selection rectangle (vx0, vy0, vx1, vy1)
+        self.selection: Optional[Tuple[int, int, int, int]] = None
         self._tooltip_fn: Optional[Callable[[int, int], str]] = None
         self._pixmap_fn: Optional[Callable[[int, int], Optional[QPixmap]]] = None
         self._hover: Optional[Tuple[int, int]] = None
         self._last_size: Tuple[int, int] = (0, 0)
+        self._drag_button: Optional[int] = None
+        self._drag_last: Optional[Tuple[int, int]] = None
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
     def set_grid(
@@ -134,6 +143,19 @@ class MapCanvas(QWidget):
                     if ov is not None:
                         p.fillRect(x * cell, y * cell, cell, cell, QColor(*ov))
         self._paint_markers(p)
+        if self.selection is not None:
+            x0, y0, x1, y1 = self.selection
+            xa, xb = sorted((x0, x1))
+            ya, yb = sorted((y0, y1))
+            p.fillRect(
+                xa * cell,
+                ya * cell,
+                (xb - xa + 1) * cell,
+                (yb - ya + 1) * cell,
+                QColor(64, 160, 255, 70),
+            )
+            p.setPen(QPen(QColor(80, 180, 255), max(1, cell // 3)))
+            p.drawRect(xa * cell, ya * cell, (xb - xa + 1) * cell - 1, (yb - ya + 1) * cell - 1)
         if self.selected is not None:
             sx, sy = self.selected
             p.setPen(QPen(QColor(255, 255, 0), max(1, cell // 4)))
@@ -196,7 +218,10 @@ class MapCanvas(QWidget):
         if cell is None:
             return
         self.selected = cell
+        self._drag_button = int(event.button().value)
+        self._drag_last = cell
         self.update()
+        self.cellPressed.emit(cell[0], cell[1], int(event.button().value))
         if event.button() == Qt.RightButton:
             self.cellRightClicked.emit(cell[0], cell[1])
         else:
@@ -211,16 +236,31 @@ class MapCanvas(QWidget):
         if cell != self._hover:
             self._hover = cell
             self.cellHovered.emit(cell[0], cell[1])
+        if self._drag_button is not None and cell != self._drag_last:
+            self._drag_last = cell
+            self.selected = cell
+            self.cellDragged.emit(cell[0], cell[1], self._drag_button)
+            self.update()
 
+    def mouseReleaseEvent(self, event) -> None:
+        cell = self._pos_to_cell(event.position())
+        btn = int(event.button().value)
+        if cell is not None:
+            self.cellReleased.emit(cell[0], cell[1], btn)
+        self._drag_button = None
+        self._drag_last = None
+        super().mouseReleaseEvent(event)
 
 class MapOverviewPanel(QWidget):
     """Reusable overview: color-mapped grid + tile preview + paint value."""
 
     cellSelected = Signal(int, int)
     cellEdited = Signal(int, int, int)  # x, y, new_code
+    regionEdited = Signal()  # batch edit finished
 
     def __init__(self, title: str = "俯视图") -> None:
         super().__init__()
+        self.setFocusPolicy(Qt.StrongFocus)
         self._get_code: Optional[Callable[[int, int], int]] = None
         self._set_code: Optional[Callable[[int, int, int], None]] = None
         self._ground_code: Optional[Callable[[int, int], int]] = None
@@ -235,6 +275,10 @@ class MapOverviewPanel(QWidget):
         self.tile_pack: Optional[RleTilePack] = None
         self.palette: Optional[List[Tuple[int, int, int]]] = None
         self.adjust_mode = False
+        self.tool_mode = "paint"  # paint | select
+        self._clipboard: Optional[List[List[int]]] = None  # [dx][dy] engine codes
+        self._sel_anchor: Optional[Tuple[int, int]] = None  # visual
+        self._batch_dirty = False
         # full: hover updates text+preview; coords: one-line hover (stable); off: click only
         self.hover_inspect_mode = "full"
         self._last_info_cell: Optional[Tuple[int, int]] = None
@@ -249,6 +293,24 @@ class MapOverviewPanel(QWidget):
         )
         self.btn_adjust.toggled.connect(self._on_adjust_toggled)
         bar.addWidget(self.btn_adjust)
+        bar.addWidget(QLabel("工具"))
+        self.tool_combo = QComboBox()
+        self.tool_combo.addItem("画笔(拖动画)", "paint")
+        self.tool_combo.addItem("框选(复制粘贴)", "select")
+        self.tool_combo.currentIndexChanged.connect(self._on_tool_changed)
+        bar.addWidget(self.tool_combo)
+        self.btn_copy = QPushButton("复制")
+        self.btn_copy.setToolTip("复制选区图层值 (Ctrl+C)；不改动入口")
+        self.btn_copy.clicked.connect(self.copy_selection)
+        bar.addWidget(self.btn_copy)
+        self.btn_paste = QPushButton("粘贴")
+        self.btn_paste.setToolTip("粘贴到选区左上 / 当前格 (Ctrl+V)")
+        self.btn_paste.clicked.connect(self.paste_clipboard)
+        bar.addWidget(self.btn_paste)
+        self.btn_fill = QPushButton("填充")
+        self.btn_fill.setToolTip("用笔刷值填充选区")
+        self.btn_fill.clicked.connect(self.fill_selection)
+        bar.addWidget(self.btn_fill)
         bar.addWidget(QLabel("色块"))
         self.sp_cell = QSpinBox()
         self.sp_cell.setRange(2, 24)
@@ -287,6 +349,9 @@ class MapOverviewPanel(QWidget):
         self.canvas.cellClicked.connect(self._on_click)
         self.canvas.cellRightClicked.connect(self._on_right_click)
         self.canvas.cellHovered.connect(self._on_hover)
+        self.canvas.cellPressed.connect(self._on_cell_pressed)
+        self.canvas.cellDragged.connect(self._on_cell_dragged)
+        self.canvas.cellReleased.connect(self._on_cell_released)
         self.scroll.setWidget(self.canvas)
         body.addWidget(self.scroll, 3)
 
@@ -312,6 +377,9 @@ class MapOverviewPanel(QWidget):
         self.sp_brush.setToolTip("写入格子的事件号/图层值；-1 表示该格无事件。")
         paint_row.addWidget(self.sp_brush)
         side_inner.addLayout(paint_row)
+        self.lbl_sel = QLabel("选区: 无")
+        self.lbl_sel.setWordWrap(True)
+        side_inner.addWidget(self.lbl_sel)
         self.lbl_hint = QLabel()
         self.lbl_hint.setWordWrap(True)
         self.lbl_hint.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -324,6 +392,7 @@ class MapOverviewPanel(QWidget):
 
         self.canvas.set_tooltip_providers(self._tooltip_text, self._tooltip_pixmap)
         self._help_preset = "generic"
+        self._update_tool_buttons()
 
     def set_help_preset(self, preset: str) -> None:
         """Update side-panel instructions (generic map vs SData event layer)."""
@@ -345,11 +414,183 @@ class MapOverviewPanel(QWidget):
             self.hover_inspect_mode = "full"
             self.lbl_hint.setText(
                 "浏览：左键选中格；悬停看编号，右侧看贴图。\n"
-                "改值：先「进入调整模式」，左键写入笔刷值；"
-                "右键在未开模式时吸取笔刷、开模式时写 -1。"
+                "改值：先「进入调整模式」。\n"
+                "画笔：左键按住拖动连续绘制；右键未开模式吸取、开模式写 -1。\n"
+                "框选：拖出矩形后「复制/粘贴/填充」(Ctrl+C/V)；只改图层贴图码，不动入口。"
             )
             self.btn_adjust.setText("进入调整模式")
         self._on_adjust_toggled(self.adjust_mode)
+
+    def _update_tool_buttons(self) -> None:
+        sel = self.tool_mode == "select" or self.canvas.selection is not None
+        self.btn_copy.setEnabled(True)
+        self.btn_paste.setEnabled(self._clipboard is not None)
+        self.btn_fill.setEnabled(self.canvas.selection is not None)
+
+    def _on_tool_changed(self, _idx: int = 0) -> None:
+        self.tool_mode = self.tool_combo.currentData() or "paint"
+        self._update_tool_buttons()
+
+    def selection_engine_rect(self) -> Optional[Tuple[int, int, int, int]]:
+        """Return inclusive engine (x0,y0,x1,y1) or None."""
+        sel = self.canvas.selection
+        if sel is None:
+            return None
+        vx0, vy0, vx1, vy1 = sel
+        e00 = self._visual_to_engine(vx0, vy0)
+        e11 = self._visual_to_engine(vx1, vy1)
+        x0, x1 = sorted((e00[0], e11[0]))
+        y0, y1 = sorted((e00[1], e11[1]))
+        return x0, y0, x1, y1
+
+    def _set_visual_selection(self, vx0: int, vy0: int, vx1: int, vy1: int) -> None:
+        self.canvas.selection = (vx0, vy0, vx1, vy1)
+        rect = self.selection_engine_rect()
+        if rect:
+            x0, y0, x1, y1 = rect
+            self.lbl_sel.setText(
+                f"选区引擎 X={x0}..{x1}, Y={y0}..{y1}\n"
+                f"({x1 - x0 + 1}×{y1 - y0 + 1})"
+            )
+        self.canvas.update()
+        self._update_tool_buttons()
+
+    def clear_selection(self) -> None:
+        self.canvas.selection = None
+        self._sel_anchor = None
+        self.lbl_sel.setText("选区: 无")
+        self.canvas.update()
+        self._update_tool_buttons()
+
+    def copy_selection(self) -> bool:
+        rect = self.selection_engine_rect()
+        if rect is None or not self._get_code:
+            return False
+        x0, y0, x1, y1 = rect
+        data: List[List[int]] = []
+        for x in range(x0, x1 + 1):
+            col = [int(self._get_code(x, y)) for y in range(y0, y1 + 1)]
+            data.append(col)
+        self._clipboard = data
+        self._update_tool_buttons()
+        self.lbl_sel.setText(
+            self.lbl_sel.text() + f"\n已复制 {len(data)}×{len(data[0]) if data else 0}"
+        )
+        return True
+
+    def paste_clipboard(self, origin: Optional[Tuple[int, int]] = None) -> int:
+        """Paste clipboard at engine origin (default: selection top-left or selected)."""
+        if not self._clipboard or not self._set_code or not self.adjust_mode:
+            return 0
+        if origin is None:
+            rect = self.selection_engine_rect()
+            if rect:
+                origin = (rect[0], rect[1])
+            elif self.canvas.selected is not None:
+                origin = self._visual_to_engine(*self.canvas.selected)
+            else:
+                return 0
+        ox, oy = origin
+        n = 0
+        scroll_pos = self._preserve_scroll()
+        for dx, col in enumerate(self._clipboard):
+            for dy, val in enumerate(col):
+                x, y = ox + dx, oy + dy
+                if 0 <= x < self._w and 0 <= y < self._h:
+                    self._set_code(x, y, int(val))
+                    self.cellEdited.emit(x, y, int(val))
+                    n += 1
+        if n:
+            self.rebuild()
+            self.regionEdited.emit()
+        self._restore_scroll(scroll_pos)
+        return n
+
+    def fill_selection(self) -> int:
+        if not self.adjust_mode or not self._set_code:
+            return 0
+        rect = self.selection_engine_rect()
+        if rect is None:
+            return 0
+        x0, y0, x1, y1 = rect
+        val = self.sp_brush.value()
+        n = 0
+        scroll_pos = self._preserve_scroll()
+        for x in range(x0, x1 + 1):
+            for y in range(y0, y1 + 1):
+                self._set_code(x, y, val)
+                self.cellEdited.emit(x, y, val)
+                n += 1
+        if n:
+            self.rebuild()
+            self.regionEdited.emit()
+        self._restore_scroll(scroll_pos)
+        return n
+
+    def keyPressEvent(self, event) -> None:
+        key = event.key()
+        mods = event.modifiers()
+        if mods & Qt.ControlModifier:
+            if key == Qt.Key_C:
+                self.copy_selection()
+                return
+            if key == Qt.Key_V:
+                self.paste_clipboard()
+                return
+            if key == Qt.Key_A and self._w and self._h:
+                self._set_visual_selection(0, 0, self._w - 1, self._h - 1)
+                return
+        if key == Qt.Key_Escape:
+            self.clear_selection()
+            return
+        super().keyPressEvent(event)
+    def _paint_engine_cell(self, ex: int, ey: int, value: Optional[int] = None) -> None:
+        if not self.adjust_mode or not self._set_code:
+            return
+        if not (0 <= ex < self._w and 0 <= ey < self._h):
+            return
+        val = self.sp_brush.value() if value is None else value
+        self._set_code(ex, ey, val)
+        self.cellEdited.emit(ex, ey, val)
+        self._batch_dirty = True
+
+    def _on_cell_pressed(self, vx: int, vy: int, button: int) -> None:
+        self.setFocus(Qt.MouseFocusReason)
+        if button != int(Qt.LeftButton.value):
+            return
+        if self.tool_mode == "select":
+            self._sel_anchor = (vx, vy)
+            self._set_visual_selection(vx, vy, vx, vy)
+            return
+        if self.adjust_mode and self.tool_mode == "paint":
+            ex, ey = self._visual_to_engine(vx, vy)
+            self._batch_dirty = False
+            self._paint_engine_cell(ex, ey)
+
+    def _on_cell_dragged(self, vx: int, vy: int, button: int) -> None:
+        if button != int(Qt.LeftButton.value):
+            return
+        if self.tool_mode == "select" and self._sel_anchor is not None:
+            ax, ay = self._sel_anchor
+            self._set_visual_selection(ax, ay, vx, vy)
+            return
+        if self.adjust_mode and self.tool_mode == "paint":
+            ex, ey = self._visual_to_engine(vx, vy)
+            self._paint_engine_cell(ex, ey)
+
+    def _on_cell_released(self, vx: int, vy: int, button: int) -> None:
+        if button != int(Qt.LeftButton.value):
+            return
+        if self.tool_mode == "select" and self._sel_anchor is not None:
+            ax, ay = self._sel_anchor
+            self._set_visual_selection(ax, ay, vx, vy)
+            self._sel_anchor = None
+        if self._batch_dirty:
+            scroll_pos = self._preserve_scroll()
+            self.rebuild()
+            self.regionEdited.emit()
+            self._restore_scroll(scroll_pos)
+            self._batch_dirty = False
 
     def _visual_to_engine(self, vx: int, vy: int) -> Tuple[int, int]:
         """Map canvas cell → on-disk / in-game (engine) coordinates."""
@@ -498,11 +739,8 @@ class MapOverviewPanel(QWidget):
         self.cellSelected.emit(ex, ey)
         self._last_info_cell = None
         self._show_cell(ex, ey)
-        if self.adjust_mode and self._set_code is not None:
-            val = self.sp_brush.value()
-            self._set_code(ex, ey, val)
-            self.cellEdited.emit(ex, ey, val)
-            self.rebuild()
+        # Painting is handled by pressed/dragged for paint tool to support drag-batch.
+        # Keep single-click paint only if press handler didn't (legacy safety): skip here.
         self._restore_scroll(scroll_pos)
 
     def _on_right_click(self, vx: int, vy: int) -> None:

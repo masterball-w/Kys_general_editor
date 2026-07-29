@@ -84,14 +84,17 @@ Kdef 脚本、对话库、场景事件挂接（DData）、SData 事件层俯视�
 
 ### 4. 大地图
 
-`earth/surface/building/*.002`（480×480）+ `mmap` 砖库主色俯视图。
-可叠加 **场景入口**（来自存档 `ranger` 场景元数据 `MainEntranceX/Y`），地图上显示坐标与场景名；右侧列表点击可定位。
+`earth/surface/building/buildx/buildy/*.002`（480×480）+ `mmap` 砖库主色俯视图。
+- **编辑层**：可切换地面 / 地表 / 建筑等；「俯视图用当前层上色」便于改建筑。
+- **批量编辑**：调整模式下画笔按住拖动连续绘制；框选后复制 / 粘贴 / 填充（Ctrl+C/V），只改 `.002` 贴图码，**不改入口**。
+- **导入导出**：选区 JSON、整层 `.002`；mmap 砖号可一键写入笔刷（×2）。
 
 ![大地图](docs/screenshots/04_world_map.png)
 
 ### 5. 贴图
 
-按配置档打开 `.Pic` 包，或提示经典散图 / `idx+grp` 路径；含场景砖 RLE 预览与索引联动。
+按配置档打开 `.Pic` 包，或提示经典散图 / `idx+grp` 路径。
+**RLE 砖库**面板支持 `mmap`（大地图/建筑）、`smp/sdx`（场景砖）、`wmp`（战场）的单帧与批量 PNG 导入导出，以及保存 idx+grp。
 
 ![贴图](docs/screenshots/05_assets.png)
 

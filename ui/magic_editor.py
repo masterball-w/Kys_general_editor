@@ -35,6 +35,7 @@ class MagicEditorPanel(QWidget):
         self._loading = False
         self._eft_cache: PicArchive | None = None
         self._eft_ami = -1
+        self.ctx.profileChanged.connect(self._update_compat_ui)
 
         root = QHBoxLayout(self)
         splitter = QSplitter(Qt.Horizontal)
@@ -124,9 +125,9 @@ class MagicEditorPanel(QWidget):
         pl.addStretch()
         self.detail_lay.addWidget(prev)
 
-        # Power
-        power = QGroupBox("威力与成长曲线 (MinHurt / MaxHurt / HurtModulus)")
-        pf = QFormLayout(power)
+        # Power — Promise: growth curve; classic: Hurt[18..27] per level
+        self.power_curve_box = QGroupBox("威力与成长曲线 (MinHurt / MaxHurt / HurtModulus)")
+        pf = QFormLayout(self.power_curve_box)
         self.sp_min_hurt = self._spin(0, 30000)
         self.sp_max_hurt = self._spin(0, 30000)
         self.sp_hurt_mod = self._spin(0, 30000)
@@ -146,11 +147,28 @@ class MagicEditorPanel(QWidget):
         pf.addRow("推算十级威力", self.lbl_p10)
         pf.addRow("1～10 级威力表", self.lbl_curve_table)
         pf.addRow("计算公式", self.lbl_curve_help)
-        self.detail_lay.addWidget(power)
+        self.detail_lay.addWidget(self.power_curve_box)
 
-        # Bonus mode
-        bonus = QGroupBox("加成模式 (伤害权重，见 BattleManager::CalHurtValue)")
-        bg = QGridLayout(bonus)
+        self.power_level_box = QGroupBox("各级威力 Hurt[18..27]（经典 KYS：每级单独存储）")
+        plg = QGridLayout(self.power_level_box)
+        self.sp_hurt_lv: list[QSpinBox] = []
+        for i in range(10):
+            sp = self._spin(0, 30000)
+            self.sp_hurt_lv.append(sp)
+            plg.addWidget(QLabel(f"{i + 1} 级"), i // 5, (i % 5) * 2)
+            plg.addWidget(sp, i // 5, (i % 5) * 2 + 1)
+        hint_cl = QLabel(
+            "经典引擎直接读取各级 Hurt，不使用 MinHurt/MaxHurt/HurtModulus。"
+            "勿用前传成长曲线面板编辑本档。"
+        )
+        hint_cl.setWordWrap(True)
+        hint_cl.setStyleSheet("color:#555;")
+        plg.addWidget(hint_cl, 2, 0, 1, 10)
+        self.detail_lay.addWidget(self.power_level_box)
+
+        # Bonus mode (Promise only — classic reuses words 21..24 as hurt levels 4..7)
+        self.bonus_box = QGroupBox("加成模式 (伤害权重，见 BattleManager::CalHurtValue)")
+        bg = QGridLayout(self.bonus_box)
         self.sp_mod_att = self._spin(0, 100)
         self.sp_mod_mp = self._spin(0, 100)
         self.sp_mod_spd = self._spin(0, 100)
@@ -172,7 +190,7 @@ class MagicEditorPanel(QWidget):
         )
         hint.setWordWrap(True)
         bg.addWidget(hint, 5, 0, 1, 2)
-        self.detail_lay.addWidget(bonus)
+        self.detail_lay.addWidget(self.bonus_box)
 
         # Range
         rng = QGroupBox("移动 / 攻击范围")
@@ -256,8 +274,28 @@ class MagicEditorPanel(QWidget):
         apply.clicked.connect(self._apply_current)
         self.detail_lay.addWidget(apply)
         self.detail_lay.addStretch()
+        self._update_compat_ui()
+
+    def _hurt_per_level(self) -> bool:
+        p = self.ctx.profile
+        return bool(p and p.compat.magic_hurt_per_level)
+
+    def _gongti_enabled(self) -> bool:
+        p = self.ctx.profile
+        return bool(p and p.compat.magic_gongti_block)
+
+    def _update_compat_ui(self, *_args) -> None:
+        per_lv = self._hurt_per_level()
+        self.power_curve_box.setVisible(not per_lv)
+        self.power_level_box.setVisible(per_lv)
+        self.bonus_box.setVisible(not per_lv)
+        if self._gongti_enabled():
+            self.gongti_box.setVisible(True)
+        else:
+            self.gongti_box.setVisible(False)
 
     def refresh(self) -> None:
+        self._update_compat_ui()
         self._rebuild_list()
 
     def _rebuild_list(self) -> None:
@@ -330,10 +368,14 @@ class MagicEditorPanel(QWidget):
         self.sp_max_lv.setValue(self._word(rec, 80))
         self.sp_poison.setValue(self._word(rec, 17))
 
-        self.sp_min_hurt.setValue(self._word(rec, 18))
-        self.sp_max_hurt.setValue(self._word(rec, 19))
-        self.sp_hurt_mod.setValue(self._word(rec, 20))
-        self._update_power_labels()
+        if self._hurt_per_level():
+            for i, sp in enumerate(self.sp_hurt_lv):
+                sp.setValue(self._word(rec, 18 + i))
+        else:
+            self.sp_min_hurt.setValue(self._word(rec, 18))
+            self.sp_max_hurt.setValue(self._word(rec, 19))
+            self.sp_hurt_mod.setValue(self._word(rec, 20))
+            self._update_power_labels()
 
         self.sp_mod_att.setValue(self._word(rec, 21))
         self.sp_mod_mp.setValue(self._word(rec, 22))
@@ -373,18 +415,21 @@ class MagicEditorPanel(QWidget):
         self.sp_add_hid.setValue(self._word(rec, 75))
 
         beyond = words <= 68
-        self.sp_max_lv.setEnabled(not beyond)
-        self.gongti_box.setEnabled(True)
-        self.gongti_box.setTitle(
-            "内功 / 功体属性"
-            + ("（经典字宽：高位字段可能无效）" if beyond else "")
-        )
-
-        is_neigong = self._word(rec, 12) == 5
-        if not beyond:
+        self.sp_max_lv.setEnabled(not beyond and self._gongti_enabled())
+        self._update_compat_ui()
+        if self._gongti_enabled():
+            self.gongti_box.setEnabled(True)
             self.gongti_box.setTitle(
-                "内功 / 功体属性" + ("" if is_neigong else "（当前非内功，字段仍可改）")
+                "内功 / 功体属性"
+                + ("（经典字宽：高位字段可能无效）" if beyond else "")
             )
+            is_neigong = self._word(rec, 12) == 5
+            if not beyond:
+                self.gongti_box.setTitle(
+                    "内功 / 功体属性" + ("" if is_neigong else "（当前非内功，字段仍可改）")
+                )
+        else:
+            self.gongti_box.setEnabled(False)
 
         self._loading = False
         self._refresh_eft_preview()
@@ -420,7 +465,8 @@ class MagicEditorPanel(QWidget):
     def _on_field_changed(self, *_args) -> None:
         if self._loading:
             return
-        self._update_power_labels()
+        if not self._hurt_per_level():
+            self._update_power_labels()
         self._update_mod_label()
         # live category label
         mt = self.cb_type.currentData()
@@ -479,6 +525,8 @@ class MagicEditorPanel(QWidget):
         try:
             name = self.ed_name.text()
             arc.magics.set_name(mid, name, 1, 5)
+            per_lv = self._hurt_per_level()
+            gongti = self._gongti_enabled()
             sets = {
                 12: int(self.cb_type.currentData()),
                 14: int(self.cb_hurt.currentData()),
@@ -487,15 +535,7 @@ class MagicEditorPanel(QWidget):
                 7: self.sp_need_hp.value(),
                 11: self.sp_sound.value(),
                 10: self.sp_event.value(),
-                80: self.sp_max_lv.value(),
                 17: self.sp_poison.value(),
-                18: self.sp_min_hurt.value(),
-                19: self.sp_max_hurt.value(),
-                20: self.sp_hurt_mod.value(),
-                21: self.sp_mod_att.value(),
-                22: self.sp_mod_mp.value(),
-                23: self.sp_mod_spd.value(),
-                24: self.sp_mod_wpn.value(),
                 15: int(self.cb_area.currentData()),
                 8: self.sp_min_step.value(),
                 28: self.sp_move1.value(),
@@ -504,26 +544,44 @@ class MagicEditorPanel(QWidget):
                 47: self.sp_att10.value(),
                 26: self.sp_mp_scale.value(),
                 27: self.sp_hp_scale.value(),
-                76: int(self.cb_battle.currentData()),
-                77: self.sp_need_exp0.value(),
-                78: self.sp_need_exp1.value(),
-                79: self.sp_need_exp2.value(),
-                67: self.sp_add_med.value(),
-                68: self.sp_add_usepoi.value(),
-                69: self.sp_add_medpoi.value(),
-                70: self.sp_add_defpoi.value(),
-                71: self.sp_add_fist.value(),
-                72: self.sp_add_sword.value(),
-                73: self.sp_add_knife.value(),
-                74: self.sp_add_unusual.value(),
-                75: self.sp_add_hid.value(),
             }
-            for i in range(3):
-                sets[48 + i] = self.sp_add_hp[i].value()
-                sets[51 + i] = self.sp_add_mp[i].value()
-                sets[54 + i] = self.sp_add_att[i].value()
-                sets[57 + i] = self.sp_add_def[i].value()
-                sets[60 + i] = self.sp_add_spd[i].value()
+            if gongti:
+                sets[80] = self.sp_max_lv.value()
+            if per_lv:
+                for i, sp in enumerate(self.sp_hurt_lv):
+                    sets[18 + i] = sp.value()
+            else:
+                sets.update({
+                    18: self.sp_min_hurt.value(),
+                    19: self.sp_max_hurt.value(),
+                    20: self.sp_hurt_mod.value(),
+                    21: self.sp_mod_att.value(),
+                    22: self.sp_mod_mp.value(),
+                    23: self.sp_mod_spd.value(),
+                    24: self.sp_mod_wpn.value(),
+                })
+            if gongti:
+                sets.update({
+                    76: int(self.cb_battle.currentData()),
+                    77: self.sp_need_exp0.value(),
+                    78: self.sp_need_exp1.value(),
+                    79: self.sp_need_exp2.value(),
+                    67: self.sp_add_med.value(),
+                    68: self.sp_add_usepoi.value(),
+                    69: self.sp_add_medpoi.value(),
+                    70: self.sp_add_defpoi.value(),
+                    71: self.sp_add_fist.value(),
+                    72: self.sp_add_sword.value(),
+                    73: self.sp_add_knife.value(),
+                    74: self.sp_add_unusual.value(),
+                    75: self.sp_add_hid.value(),
+                })
+                for i in range(3):
+                    sets[48 + i] = self.sp_add_hp[i].value()
+                    sets[51 + i] = self.sp_add_mp[i].value()
+                    sets[54 + i] = self.sp_add_att[i].value()
+                    sets[57 + i] = self.sp_add_def[i].value()
+                    sets[60 + i] = self.sp_add_spd[i].value()
             for w, v in sets.items():
                 if 0 <= w < arc.magics.words:
                     arc.magics.set(mid, w, v)

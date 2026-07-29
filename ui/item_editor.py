@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 
 from kys_formats.item_meta import (
     ITEM_TYPES, EQUIP_TYPES, NEED_SEX, NEED_MP_TYPES, CHANGE_MP_TYPES,
-    BATTLE_STATES, item_summary, item_type_display,
+    BATTLE_STATES, item_summary, item_type_display, equip_types_for_compat,
 )
 from ui.context import EditorContext
 from ui.id_combo import NamedIdCombo, rebuild_named_combos
@@ -33,6 +33,7 @@ class ItemEditorPanel(QWidget):
         self._iid = -1
         self._loading = False
         self._named_combos: list[NamedIdCombo] = []
+        self.ctx.profileChanged.connect(self._update_compat_ui)
 
         root = QHBoxLayout(self)
         splitter = QSplitter(Qt.Horizontal)
@@ -137,11 +138,15 @@ class ItemEditorPanel(QWidget):
         self.sp_set = self._spin(-1, 99)
         self.sp_exp_magic = self._spin(0, 30000)
         self.cb_need_sex = self._combo(NEED_SEX)
-        sf.addRow("装备战斗特效 BattleEffect[13]", self.cb_battle)
-        sf.addRow("酒效应 WineEffect[14]", self.sp_wine)
-        sf.addRow("套装号 SetNum[12]", self.sp_set)
+        self._lbl_battle = QLabel("装备战斗特效 BattleEffect[13]")
+        self._lbl_wine = QLabel("酒效应 WineEffect[14]")
+        self._lbl_set = QLabel("套装号 SetNum[12]")
+        sf.addRow(self._lbl_battle, self.cb_battle)
+        sf.addRow(self._lbl_wine, self.sp_wine)
+        sf.addRow(self._lbl_set, self.sp_set)
         sf.addRow("秘籍经验 ExpOfMagic[11]", self.sp_exp_magic)
         sf.addRow("性别限制 needSex[15]", self.cb_need_sex)
+        self.special_box = special
         self.detail_lay.addWidget(special)
 
         adds = QGroupBox("属性加成 Add*（装备/丹药生效）")
@@ -264,8 +269,38 @@ class ItemEditorPanel(QWidget):
         apply.clicked.connect(self._apply_current)
         self.detail_lay.addWidget(apply)
         self.detail_lay.addStretch()
+        self._update_compat_ui()
+
+    def _promise_item_extras(self) -> bool:
+        p = self.ctx.profile
+        return bool(p and p.compat.item_battle_wine_set)
+
+    def _rebuild_equip_combo(self) -> None:
+        compat = self.ctx.profile.compat if self.ctx.profile else None
+        current = self.cb_equip.currentData()
+        self.cb_equip.blockSignals(True)
+        self.cb_equip.clear()
+        for k in sorted(equip_types_for_compat(compat).keys()):
+            self.cb_equip.addItem(f"{k}: {equip_types_for_compat(compat)[k]}", k)
+        self._set_combo(self.cb_equip, int(current) if current is not None else -1)
+        self.cb_equip.blockSignals(False)
+
+    def _update_compat_ui(self, *_args) -> None:
+        extras = self._promise_item_extras()
+        self._lbl_battle.setVisible(extras)
+        self.cb_battle.setVisible(extras)
+        self._lbl_wine.setVisible(extras)
+        self.sp_wine.setVisible(extras)
+        self._lbl_set.setVisible(extras)
+        self.sp_set.setVisible(extras)
+        title = "特效 / 限制"
+        if not extras:
+            title += "（经典：无战斗特效/酒效应/套装）"
+        self.special_box.setTitle(title)
+        self._rebuild_equip_combo()
 
     def refresh(self) -> None:
+        self._update_compat_ui()
         rebuild_named_combos(self._named_combos, self.ctx)
         self._rebuild_list()
 
@@ -419,9 +454,6 @@ class ItemEditorPanel(QWidget):
             sets = {
                 0: self.sp_list.value(),
                 11: self.sp_exp_magic.value(),
-                12: self.sp_set.value(),
-                13: int(self.cb_battle.currentData()),
-                14: self.sp_wine.value(),
                 15: int(self.cb_need_sex.currentData()),
                 36: self.sp_magic.get_id(),
                 37: self.sp_ami.value(),
@@ -473,6 +505,10 @@ class ItemEditorPanel(QWidget):
                 83: self.sp_count.value(),
                 84: self.sp_rate.value(),
             }
+            if self._promise_item_extras():
+                sets[12] = self.sp_set.value()
+                sets[13] = int(self.cb_battle.currentData())
+                sets[14] = self.sp_wine.value()
             for i in range(5):
                 sets[85 + i] = self.sp_need_item[i].get_id()
                 sets[90 + i] = self.sp_need_amt[i].value()

@@ -117,6 +117,32 @@ from .ranger_header import RangerHeaderLayout, probe_ranger_header_layout
 
 
 @dataclass(frozen=True)
+class EditorCompat:
+    """Engine/UI semantics that differ between Promise (前传) and classic KYS."""
+
+    # Classic: Hurt[18..27] = per-level power; Promise: Min/Max/Modulus + CalNewHurtValue
+    magic_hurt_per_level: bool = False
+    # Classic: weapon + body armor only (EquipType 0/1)
+    item_hat_shoes_equip: bool = True
+    # Classic: no BattleEffect / WineEffect / SetNum on items
+    item_battle_wine_set: bool = True
+    # Classic: no inner-power / 功体 block on magic records
+    magic_gongti_block: bool = True
+    # Classic: role has no practised 功体 (Gongti[28], GongtiExam[31])
+    role_gongti_fields: bool = True
+
+
+COMPAT_PROMISE = EditorCompat()
+COMPAT_CLASSIC = EditorCompat(
+    magic_hurt_per_level=True,
+    item_hat_shoes_equip=False,
+    item_battle_wine_set=False,
+    magic_gongti_block=False,
+    role_gongti_fields=False,
+)
+
+
+@dataclass(frozen=True)
 class GameProfile:
     id: str
     display_name: str
@@ -136,6 +162,7 @@ class GameProfile:
     assets: AssetPaths = field(default_factory=AssetPaths)
     # Prefer this encoding when auto-detecting text (hint only)
     default_text_encoding: str = "auto"
+    compat: EditorCompat = field(default_factory=lambda: COMPAT_PROMISE)
 
     @property
     def ranger_has_money_word(self) -> bool:
@@ -153,6 +180,7 @@ class GameProfile:
 PROFILE_PROMISE = GameProfile(
     id="promise",
     display_name="金庸群侠前传 (Kys Promise)",
+    compat=COMPAT_PROMISE,
     magic_words=111,
     shop_words=18,
     inventory_slots=400,
@@ -172,6 +200,7 @@ PROFILE_PROMISE = GameProfile(
 PROFILE_CLASSIC = GameProfile(
     id="classic",
     display_name="经典 KYS (散图/idx+grp)",
+    compat=COMPAT_CLASSIC,
     magic_words=68,
     shop_words=15,
     inventory_slots=200,
@@ -373,13 +402,16 @@ def detect_profile(data_root: str | Path) -> GameProfile:
         encoding = "big5"
         pid = "classic"
         display = "经典 KYS (自动探测)"
+        compat = COMPAT_CLASSIC
     else:
         pid = "promise"
         display = "金庸群侠前传 (自动探测)"
+        compat = COMPAT_PROMISE
 
     return GameProfile(
         id=pid,
         display_name=display,
+        compat=compat,
         role_words=91,
         item_words=95,
         scene_words=26,
