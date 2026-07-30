@@ -43,16 +43,18 @@ python scripts/capture_screenshots.py
 
 | 子页 | 说明 | 截图 |
 |------|------|------|
-| 人物 | 属性、装备、武功栏、头像预览 | ![人物](docs/screenshots/01_save__roles.png) |
-| 物品定义 | 类型/加成/需求；**合成材料 NeedItem** | ![物品](docs/screenshots/01_save__items.png) |
-| 武功 | 威力曲线、范围、功体；特效预览 | ![武功](docs/screenshots/01_save__magic.png) |
-| 背包 | 物品栏槽位 | ![背包](docs/screenshots/01_save__inventory.png) |
+| 人物 | 属性、装备、武功栏、头像预览；经典档隐藏前传「功体」字段；攻击/轻功/防御支持上千数值 | ![人物](docs/screenshots/01_save__roles.png) |
+| 物品定义 | 类型/加成/需求/合成材料；经典档仅武器+身披，隐藏战斗特效/酒效应/套装 | ![物品](docs/screenshots/01_save__items.png) |
+| 武功 | 前传：成长曲线 + 功体；经典：1～10 级逐级威力；特效预览 | ![武功](docs/screenshots/01_save__magic.png) |
+| 背包 | 物品栏槽位（按配置档 ~200 / ~400） | ![背包](docs/screenshots/01_save__inventory.png) |
 | 商店 | 按配置档字宽（15/18）动态列 | ![商店](docs/screenshots/01_save__shops.png) |
 | 场景元数据 | 场景名、入场条件、地图号等 | ![场景](docs/screenshots/01_save__scenes.png) |
 
+存档总览会按 **GameProfile** 显示队伍槽位数与字节偏移（经典 836 字节头：队伍 @24、银两 @42、背包 @44，共 6 格）。
+
 ### 2. 事件
 
-Kdef 脚本、对话库、场景事件挂接（DData）、SData 事件层俯视图。
+Kdef 脚本、对话库、场景事件挂接（DData）、SData 事件层俯视图。按存档槽加载 **Dn/Sn** 剧情进度，可与 `alldef` 模板对比进度并支持事件回滚；DData 支持主脚本列与跳转 kdef 编辑器。
 
 ![事件](docs/screenshots/02_events.png)
 
@@ -66,7 +68,7 @@ Kdef 脚本、对话库、场景事件挂接（DData）、SData 事件层俯视�
 
 ![DData 挂接](docs/screenshots/02_events__ddata.png)
 
-**SData 事件层**：层 0 地面砖主色铺底，红色半透明为事件格；可进入调整模式笔刷编辑。
+**SData 事件层**：层 0 地面砖主色铺底，红色半透明为事件格；可进入调整模式笔刷编辑。俯视图 **显示轴与游戏内朝向一致**（横轴=引擎 Y、纵轴=引擎 X），读写磁盘仍为引擎坐标；支持左键笔刷、右键擦除/取色、调整模式说明与稳定滚动。
 
 ![SData 俯视图](docs/screenshots/02_events__sdata_map.png)
 
@@ -113,11 +115,18 @@ Kdef 脚本、对话库、场景事件挂接（DData）、SData 事件层俯视�
 | 项目 | 前传 (Promise) | 经典 / GodsDevils |
 |------|----------------|-------------------|
 | Magic 字宽 | 111 | 68 |
+| 武功威力 | Min/Max/成长曲线 `CalNewHurtValue` | `Hurt[18..27]` 每级单独存储 |
+| 装备部位 | 武器 / 身披 / 头戴 / 脚踩 等 | 仅武器、身披 |
+| 物品扩展 | 战斗特效、酒效应、套装号 | 无（UI 隐藏且保存时不写） |
+| 功体 | 武功记录 + 人物 Gongti 字段 | 无 |
 | Shop 字宽 | 18 | 15 |
 | War 字宽 | 156 | 93 |
 | 背包槽 | ~400 | ~200 |
+| Ranger 队伍 | 6 格 @30，背包 @42 | 6 格 @24（836 头），银两 @42，背包 @44 |
 | 头像/物品图 | `resource/*.Pic` | `head/*.png` `item/*.png` |
 | 战斗/特效 | `fight/NNN/MM.pic`、`eft/*.pic` | `fight/fightNNN.grp`、`resource/eft.idx` |
+
+兼容语义由 `GameProfile.compat`（`EditorCompat`）驱动；工具栏可强制指定配置档，自动探测时按 Magic 字宽、War 字宽与贴图布局判断。
 
 ## 格式库（无 UI）
 
@@ -134,7 +143,53 @@ arc.load("path/to/save")
 - 背包槽按磁盘实际长度读写，并 pad 到配置档 `inventory_slots`。
 - talk / name 为 XOR 0xFF + Big5/GBK；GodsDevils 存档名偏 Big5。
 - 经典 `eft` / `fight` / `hdgrp` 为 RLE 调色板图，部分面板预览仍有限。
+- 经典武功勿用前传「成长曲线」面板编辑，否则可能破坏 `Hurt[18..27]`。
 - **不要**将游戏二进制资源（`save/`、`resource/`、整包 `game_data`）提交进本仓库。
+
+## 更新记录
+
+（由新到旧，对应 `main` 分支提交。）
+
+### `bcb9a33` — 经典 KYS 兼容与编辑器增强
+
+- 新增 `EditorCompat`：经典武功按 **1～10 级逐级威力** 编辑；前传保留 Min/Max/成长曲线。
+- 经典物品仅 **武器/身披**；隐藏战斗特效、酒效应、套装，保存时不误写。
+- 经典隐藏武功 **功体** 块与人物 **Gongti** 字段。
+- 人物攻击/轻功/防御 SpinBox 上限提升至 9999（修复高攻击显示为 200）。
+- 大地图：编辑层切换、框选复制粘贴填充、选区 JSON / 整层 `.002` 导入导出。
+- 贴图：RLE 砖库（mmap / smp / wmp）单帧与批量 PNG、idx+grp 保存；懒加载缩略图列表。
+
+### `ca149ca` — 俯视图 XY 与 SData 编辑体验
+
+- 场景小地图 / 大地图 / SData 俯视图 **显示轴与游戏内一致**（读写仍为引擎坐标）。
+- SData 调整模式说明、右键擦除/取色、滚动条常显与滚动稳定。
+
+### `74492bd` — 经典队伍槽位偏移
+
+- 836 字节 Ranger 头：队伍 **Team[0] 在字节 24**（kys-cpp 布局），非字节 30。
+- 保留头部 padding，roundtrip 无损。
+
+### `080078f` — 六格队伍与背包 @44
+
+- 与 `cpp_reborn` 对齐：队伍 **6 格**；停止将 inv@36 误当背包（会污染 team[3..5]）。
+- 经典：**银两 @42、背包 @44**；存档总览完整保留队伍列表。
+
+### `8df4c64` — 探测 836 字节 Mod 头
+
+- 按 `role_o` 与 inventory 基址探测队伍槽数与偏移。
+- 存档总览显示各布局下的槽位数与字节位置。
+
+### `cb144e0` — 存档绑定剧情进度
+
+- 按存档槽加载 **Dn/Sn**；存档页与事件页槽位同步。
+- DData 与 `alldef` 模板对比进度（0/1），支持 **ModifyEvent 图回滚**。
+- `GameProfile` 支持 ranger 背包基址 42/44；GodsDevils 并入经典 KYS 配置档。
+- DData 主脚本列、下拉与跳转 kdef 脚本编辑器。
+
+### `e864eef` — 首次发布
+
+- 与引擎解耦的数据编辑器；`GameProfile` 多游戏字宽与贴图布局。
+- 地图俯视图、存档/事件/战斗/贴图/交叉引用等主界面与 README 截图。
 
 ## 测试
 
