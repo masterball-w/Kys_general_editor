@@ -12,3 +12,6 @@ app/build/
 app/release/
 *.apk
 *.aab
+
+release.keystore
+*.keystore
