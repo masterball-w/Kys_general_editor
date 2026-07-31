@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">KYS编辑器</string>
+    <string name="select_data_root">选择游戏数据目录</string>
+    <string name="no_data_root">请选择含save/和resource/的游戏数据根目录</string>
+    <string name="reload_all">全部重新加载</string>
+    <string name="save_to_disk">保存到磁盘</string>
+    <string name="tab_save">存档数据</string>
+    <string name="tab_events">事件</string>
+    <string name="tab_battle">战斗</string>
+    <string name="tab_worldmap">大地图</string>
+    <string name="tab_assets">贴图</string>
+    <string name="tab_crossref">交叉引用</string>
+    <string name="inventory">背包</string>
+    <string name="slot">槽</string>
+    <string name="item_id">物品ID</string>
+    <string name="name">名称</string>
+    <string name="amount">数量</string>
+</resources>
