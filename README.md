@@ -4,6 +4,8 @@
 
 截图示例基于本机「天龙八部 / GodsDevils」数据根（`save/` + `resource/` + 散图目录）。
 
+> **Android 版现已上线！** 请前往 [`feature/android-editor`](https://github.com/masterball-w/Kys_general_editor/tree/feature/android-editor/for_Android) 分支查看 Kotlin + Jetpack Compose 实现的移动端编辑器，支持在手机上直接编辑存档。APK 下载见 [Releases](https://github.com/masterball-w/Kys_general_editor/releases)。
+
 ## 安装与启动
 
 ```bash
